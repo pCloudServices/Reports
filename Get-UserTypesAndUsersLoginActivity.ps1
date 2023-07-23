@@ -169,12 +169,7 @@ Catch{
     }
 }
 
-# @FUNCTION@ ======================================================================================================================
-# Name...........: CPMConnectionTest
-# Description....: Performs multiple Casos calls against a vault
-# Parameters.....: UserName, Password, VaultIP
-# Return Values..: stdout txt file
-# =================================================================================================================================
+
 Function Get-LicenseCapacityReport(){
 param(
  [string]$vaultIp,
@@ -267,7 +262,7 @@ $specificUserTypesString = $GetSpecificuserTypes -join ','
                 # Export the results to a CSV file
                 if($ExportToCSV){
                     $csvFilePath = ".\LicenseCapacityReport.csv"
-                    $usersInfo | Export-Csv -Path $csvFilePath -NoTypeInformation -Force
+                    $usersInfo | Select-Object Name, "UserType Description", "Licensed Users", "Existing Users", "Currently Logged On Users" | Export-Csv -Path $csvFilePath -NoTypeInformation -Force
                     Write-Host "Results exported to $csvFilePath" -ForegroundColor Cyan
                     }
                 Write-Host "To get more detailed report rerun the script with '-ReportType DetailedReport' flag." -ForegroundColor Magenta
@@ -398,7 +393,7 @@ try {
         Logoff -LogoffUrl $rebuildPortalURL -headers $headers -auth $AuthType -reportType $ReportType
     }
 
-
+$creds = $null
 
 } catch {
     Write-Host "Error: $($_.Exception.Message)" -ForegroundColor Red
