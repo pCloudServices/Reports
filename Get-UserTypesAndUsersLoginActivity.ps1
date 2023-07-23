@@ -22,7 +22,9 @@ param(
     [string]$AuthType = "identity",
     [Parameter(Mandatory = $false, HelpMessage = "Specify the URL of the Privilege Cloud tenant (e.g., https://<subdomain>.cyberark.cloud)")]
     [int]$InactiveDays = 60,
-    [switch]$ExportToCSV
+    [switch]$ExportToCSV,
+    [Parameter(Mandatory=$false, HelpMessage="Specify the UserTypes you want to get a report on (default values are: EPVUser, EPVUserLite, BasicUser, ExtUser, CPM, PSM, AppProvider)")]
+    [string[]]$GetSpecificuserTypes = @("EPVUser", "EPVUserLite", "BasicUser", "ExtUser", "CPM", "PSM", "AppProvider")
 )
 
 # Version
@@ -153,7 +155,7 @@ Catch{
 
 function Get-UserType {
     param (
-        [string]$UserType
+        [string[]]$UserType
     )
 
     $uri = "$rebuildPortalURL/PasswordVault/api/Users?UserType=$UserType"
@@ -217,13 +219,22 @@ try {
         Authenticate-Identity -PortalURL $PortalURL -creds $creds
     }
 
-    $userTypeFilters = [ordered] @{
-        "EPVUser" = $null
-        "EPVUserLite" = $null
-        "BasicUser" = $null
-        "ExtUser" = $null
-        "CPM" = $null
-        "PSM" = $null
+    # If user didn't specificy types use default
+    if ($GetSpecificuserTypes -ne $null) {
+        foreach ($userType in $GetSpecificuserTypes) {
+            Get-UserType -UserType $userType
+        }
+    }
+    else {
+        $userTypeFilters = [ordered]@{
+            "EPVUser" = $null
+            "EPVUserLite" = $null
+            "BasicUser" = $null
+            "ExtUser" = $null
+            "AppProvider" = $null
+            "CPM" = $null
+            "PSM" = $null
+        }
     }
 
     Write-Host ""
