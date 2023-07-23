@@ -3,7 +3,7 @@
 
 Description:
 -------------
-This Script generates two report types: Capacity Report and Detailed Reportm, each offer different useful things.
+This Script generates two report types: Capacity Report and Detailed Report, each offer different useful things.
 
 Prerequisites:
 ----------------
@@ -44,3 +44,11 @@ PS> .\PrivilegeCloudConsumedUserReport.ps1 -PortalURL "https://mikeb.cyberark.cl
 Note:
 -----
 - The script may take some time to execute, depending on the number of users and the response time from the Privilege Cloud API.
+
+**Demo**
+--------
+
+![image](https://github.com/pCloudServices/Reports/assets/29689227/38263093-6605-4a9c-8c41-c650fe2c0047)
+
+![image](https://github.com/pCloudServices/Reports/assets/29689227/29cc786d-f384-4aea-a753-ac99fb92aaaa)
+
