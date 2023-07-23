@@ -2,7 +2,7 @@
 .SYNOPSIS
     Privilege Cloud Consumed User Report
 .DESCRIPTION
-    This script generates a Privilege Cloud consumed users report for a given tenant URL.
+    This PowerShell script generates a Privilege Cloud consumed users report for a given Privilege Cloud tenant URL. The report provides information about users of different types and their last login dates. It also identifies users who have been inactive for more than a specified number of days.
 .PARAMETER PortalURL
     Specifies the URL of the Privilege Cloud tenant.
     Example: https://<subdomain>.cyberark.cloud
@@ -10,9 +10,15 @@
     Specifies the authentication type for accessing Privilege Cloud.
     Valid values are 'cyberark' and 'identity'.
     Default value: identity
+.PARAMETER InactiveDays
+    Specifies the number of days to consider users as inactive.
+    Default value: 60
 .PARAMETER ExportToCSV
     Specifies whether to export the results to a CSV file or print them in PowerShell.
     If this switch is specified, the results will be exported to a CSV file.
+.PARAMETER GetSpecificuserTypes
+    Specifies the user types you want to get a report on.
+    Default values: EPVUser, EPVUserLite, BasicUser, ExtUser, CPM, PSM, AppProvider
 #>
 param(
     [Parameter(Mandatory = $true, HelpMessage = "Specify the URL of the Privilege Cloud tenant (e.g., https://<subdomain>.cyberark.cloud)")]
