@@ -1,6 +1,5 @@
-=============================
 Privilege Cloud Consumed User Report
-=============================
+
 
 Description:
 -------------
