@@ -1,5 +1,5 @@
 **Privilege Cloud License Capacity User Report**
-
+-------------
 
 Description:
 -------------
