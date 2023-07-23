@@ -2,7 +2,7 @@
 .SYNOPSIS
     Privilege Cloud Consumed User Report
 .DESCRIPTION
-    This PowerShell script generates a Privilege Cloud consumed users report for a given Privilege Cloud tenant URL. The report provides information about users of different types and their last login dates. It also identifies users who have been inactive for more than a specified number of days.
+    This PowerShell script generates a comprehensive report of users consuming resources in the Privilege Cloud for a given tenant URL. The report includes information about users of different types and their last login dates. Additionally, it identifies users who have been inactive for more than a specified number of days.
 .PARAMETER PortalURL
     Specifies the URL of the Privilege Cloud tenant.
     Example: https://<subdomain>.cyberark.cloud
@@ -16,25 +16,35 @@
 .PARAMETER ExportToCSV
     Specifies whether to export the results to a CSV file or print them in PowerShell.
     If this switch is specified, the results will be exported to a CSV file.
-.PARAMETER GetSpecificuserTypes
+.PARAMETER GetSpecificUserTypes
     Specifies the user types you want to get a report on.
     Default values: EPVUser, EPVUserLite, BasicUser, ExtUser, CPM, PSM, AppProvider
+.PARAMETER ReportType
+    Specifies the type of report to generate.
+    Valid values are 'CapacityReport' and 'DetailedReport'.
+    Default value: CapacityReport
+.EXAMPLE
+    .\PrivilegeCloudConsumedUserReport.ps1 -PortalURL "https://<subdomain>.cyberark.cloud" -AuthType "cyberark" -InactiveDays 90 -ExportToCSV -GetSpecificUserTypes EPVUser, BasicUser -ReportType DetailedReport
+    Generates a detailed report for EPVUser and BasicUser types in the Privilege Cloud, considering users inactive if their last login date is older than 90 days. The results will be exported to a CSV file.
 #>
 param(
     [Parameter(Mandatory = $true, HelpMessage = "Specify the URL of the Privilege Cloud tenant (e.g., https://<subdomain>.cyberark.cloud)")]
     [string]$PortalURL,
-    [Parameter(Mandatory = $true, HelpMessage = "Specify the authentication type for accessing Privilege Cloud. Valid values are 'cyberark' and 'identity'.")]
+    [Parameter(Mandatory = $false, HelpMessage = "Specify the authentication type for accessing Privilege Cloud. Valid values are 'cyberark' and 'identity'.")]
     [ValidateSet("cyberark", "identity")]
-    [string]$AuthType = "identity",
-    [Parameter(Mandatory = $false, HelpMessage = "Specify the URL of the Privilege Cloud tenant (e.g., https://<subdomain>.cyberark.cloud)")]
+    [string]$AuthType = "cyberark",
+    [Parameter(Mandatory = $false, HelpMessage = "Specify the number of days to consider users as inactive.")]
     [int]$InactiveDays = 60,
     [switch]$ExportToCSV,
-    [Parameter(Mandatory=$false, HelpMessage="Specify the UserTypes you want to get a report on (default values are: EPVUser, EPVUserLite, BasicUser, ExtUser, CPM, PSM, AppProvider)")]
-    [string[]]$GetSpecificuserTypes = @("EPVUser", "EPVUserLite", "BasicUser", "ExtUser", "CPM", "PSM", "AppProvider")
+    [Parameter(Mandatory=$false, HelpMessage="Specify the UserTypes you want to get a report on (default values are: EPVUser, EPVUserLite, BasicUser, ExtUser, AppProvider, CPM, PSM)")]
+    [string[]]$GetSpecificuserTypes = @("EPVUser", "EPVUserLite", "BasicUser", "ExtUser", "AppProvider","CPM", "PSM"),
+    [Parameter(Mandatory = $false, HelpMessage = "Specify the type of report to generate. Valid values are 'CapacityReport' and 'DetailedReport'.")]
+    [ValidateSet("DetailedReport", "CapacityReport")]
+    [string]$ReportType = "CapacityReport"
 )
 
 # Version
-[int]$Version = 1
+[int]$Version = 2
 
 
 function Authenticate-CyberArk {
@@ -129,7 +139,7 @@ Try{
                     write-host $($IdaptiveResponse.Result.Challenges.mechanisms | Out-String)
 
 
-                            #Beging Advanced Authentication Process
+                    #Beging Advanced Authentication Process
                     # *********Local Password (1st MFA) *********
                     $startPlatformAPIAdvancedAuthBody = @{SessionId = $($IdaptiveResponse.Result.SessionId); MechanismId = $($IdaptiveResponse.Result.Challenges.mechanisms|where {$_.AnswerType -eq "Text" -and $_.Name -eq "UP"}).MechanismId; Action = "Answer"; Answer = $creds.GetNetworkCredential().Password } | ConvertTo-Json -Compress
                     $AnswerToResponse = Invoke-RestMethod -Uri $startPlatformAPIAdvancedAuth -Method Post -ContentType "application/json" -Body $startPlatformAPIAdvancedAuthBody -TimeoutSec 30 -Verbose
@@ -155,7 +165,133 @@ Try{
 			}
 }
 Catch{
-    write-host "Error: $($_.exception.message) $($_.ErrorDetails.Message) $($_.exception.status) $($_.exception.Response.ResppnseUri.AbsoluteUri))"
+    write-host "Error: $($_.exception.message) $($_.ErrorDetails.Message) $($_.exception.status) $($_.exception.Response.ResppnseUri.AbsoluteUri)"
+    }
+}
+
+# @FUNCTION@ ======================================================================================================================
+# Name...........: CPMConnectionTest
+# Description....: Performs multiple Casos calls against a vault
+# Parameters.....: UserName, Password, VaultIP
+# Return Values..: stdout txt file
+# =================================================================================================================================
+Function Get-LicenseCapacityReport(){
+param(
+ [string]$vaultIp,
+ [string[]]$GetSpecificuserTypes
+)
+#Static
+$VaultOperationFolder = "$PSScriptRoot\VaultOperationsTester"
+$stdoutFile = "$VaultOperationFolder\Log\stdout.log"
+$LOG_FILE_PATH_CasosArchive = "$VaultOperationFolder\Log\old"
+
+$specificUserTypesString = $GetSpecificuserTypes -join ','
+
+ #Prereqs   
+ if(!(Test-Path -Path "$VaultOperationFolder\VaultOperationsTester.exe")){
+     Write-LogMessage -Type Error -Msg "Required folder doesn't exist: `"$VaultOperationFolder`". Make sure you get the latest version and extract it correctly from zip."
+     Pause
+     Return
+ }
+ if((Get-CimInstance -Class win32_product | where {$_.Name -like "Microsoft Visual C++ 2013 x86*"}) -eq $null){
+    $CpmRedis = "$VaultOperationFolder\vcredist_x86.exe"
+    Write-LogMessage -type Info -MSG "Installing Redis++ x86 from $CpmRedis..." -Early
+    Start-Process -FilePath $CpmRedis -ArgumentList "/install /passive /norestart" -Wait
+ }               
+        #Cleanup log file if it gets too big
+        if (Test-Path $LOG_FILE_PATH_CasosArchive)
+        {
+            if (Get-ChildItem $LOG_FILE_PATH_CasosArchive | measure -Property length -Sum | where { $_.sum -gt 5MB })
+            {
+                Write-LogMessage -type Info -MSG "Archive log folder is getting too big, deleting it." -Early
+                Write-LogMessage -type Info -MSG "Deleting $LOG_FILE_PATH_CasosArchive" -Early
+                Remove-Item $LOG_FILE_PATH_CasosArchive -Recurse -Force
+            }
+        }
+        
+        #create log file
+        New-Item -Path $stdoutFile -Force | Out-Null
+      
+
+        $process = Start-Process -FilePath "$VaultOperationFolder\VaultOperationsTester.exe" -ArgumentList "$($creds.UserName) $($creds.GetNetworkCredential().Password) $VaultIP GetLicense $specificUserTypesString" -WorkingDirectory "$VaultOperationFolder" -NoNewWindow -PassThru -Wait -RedirectStandardOutput $stdoutFile
+        $creds = $null
+        $stdout = (gc $stdoutFile)
+            if($process.ExitCode -ne 0){
+                Write-Host "-----------------------------------------"
+                $stdout | Select-String -Pattern 'Extra details' -NotMatch | Write-Host -ForegroundColor DarkGray
+                Write-LogMessage -type Error -MSG "$($stdout | Select-String -Pattern 'Extra details')"
+                Write-Host "Failed" -ForegroundColor Red
+                Write-Host "-----------------------------------------"
+                Write-Host "More detailed log can be found here: $VaultOperationFolder\Log\Casos.Error.log"
+            }
+            Else{
+                $usersInfo = @()
+                $currentUserInfo = $null
+                
+                # extract information for each user
+                foreach ($line in $stdout) {
+                    $trimmedLine = $line.Trim()
+                    
+                    if ($trimmedLine -eq "Connecting to the vault...") {
+                        # Reset the user information when we find the start marker
+                        $currentUserInfo = @{
+                            "Name" = $null
+                            "UserType Description" = $null
+                            "Licensed Users" = $null
+                            "Existing Users" = $null
+                            "Currently Logged On Users" = $null
+                        }
+                    }
+                    elseif ($trimmedLine.StartsWith("Name: ")) {
+                        $currentUserInfo["Name"] = $trimmedLine -replace "Name: "
+                    }
+                    elseif ($trimmedLine.StartsWith("UserType Description: ")) {
+                        $currentUserInfo["UserType Description"] = $trimmedLine -replace "UserType Description: "
+                    }
+                    elseif ($trimmedLine.StartsWith("Licensed Users: ")) {
+                        $currentUserInfo["Licensed Users"] = $trimmedLine -replace "Licensed Users: "
+                    }
+                    elseif ($trimmedLine.StartsWith("Existing Users: ")) {
+                        $currentUserInfo["Existing Users"] = $trimmedLine -replace "Existing Users: "
+                    }
+                    elseif ($trimmedLine.StartsWith("Currently Logged On Users: ")) {
+                        $currentUserInfo["Currently Logged On Users"] = $trimmedLine -replace "Currently Logged On Users: "
+                        # Once we have all the required information, add the user object to the array
+                        $usersInfo += New-Object PSObject -Property $currentUserInfo
+                    }
+                }
+                
+                # Output the custom objects with "Name" as the leftmost property
+                $usersInfo | Select-Object Name, "UserType Description", "Licensed Users", "Existing Users", "Currently Logged On Users" | Format-Table -AutoSize | Out-Host
+                Write-Host "-------------------------------------------------------------"
+                # Export the results to a CSV file
+                if($ExportToCSV){
+                    $csvFilePath = ".\LicenseCapacityReport.csv"
+                    $usersInfo | Export-Csv -Path $csvFilePath -NoTypeInformation -Force
+                    Write-Host "Results exported to $csvFilePath" -ForegroundColor Cyan
+                    }
+                Write-Host "To get more detailed report rerun the script with '-ReportType DetailedReport' flag." -ForegroundColor Magenta
+                 
+
+            }
+}
+
+function Logoff{
+    param (
+        [string]$LogoffUrl,
+        [hashtable]$headers,
+        [string]$auth,
+        [string]$reportType
+    )
+    Write-Host "Logging off..."
+    # only need to logoff from PVWA (so when using DetailedReport), casos has it's own logoff.
+    if ($auth -eq "cyberark" -and $reportType -eq "DetailedReport") {
+        $uri = "$LogoffUrl/PasswordVault/API/Auth/Logoff/"
+        Invoke-WebRequest -Uri $uri -Method Post -Headers $headers -ContentType "application/json" | Out-Null
+    }
+    elseif($auth -eq "identity")
+    {
+        Invoke-RestMethod -Uri $LogoffUrl -Method Post -Headers $headers | Out-Null
     }
 }
 
@@ -187,6 +323,7 @@ function Get-UserType {
                 Inactive       = $inactive
             }
 
+            # Save into param if we want to export to csv
             $userInformation += $userObject
 
             # Print user info
@@ -208,8 +345,6 @@ function Get-UserType {
 }
 
 
-
-
 # Main
 try {
     $creds = Get-Credential
@@ -218,52 +353,52 @@ try {
     $uri = New-Object System.Uri($PortalURL)
     $subdomain = $uri.Host.Split('.')[0]
     $rebuildPortalURL = $PortalURL -replace "$subdomain\.", "${subdomain}.privilegecloud."
-
-    $headers = if ($AuthType -eq "cyberark") {
-        Authenticate-CyberArk -rebuildPortalURL $rebuildPortalURL -body $body -creds $creds
-    } else {
-        Authenticate-Identity -PortalURL $PortalURL -creds $creds
-    }
+    $VaultURL = $PortalURL -replace "https://$subdomain\.", "vault-${subdomain}.privilegecloud."
 
 
-    Write-Host ""
-    Write-Host "Privilege Cloud consumed users report for tenant $PortalURL"
-    Write-Host "-----------------------------------------------------------------------"
-    Write-Host "Yellow Users = Inactive for more than $($InactiveDays) days" -ForegroundColor Black -BackgroundColor Yellow
+    If($ReportType -eq "DetailedReport"){
+        
+        # Get Auth
+        if($AuthType -eq "identity"){
+            $headers = Authenticate-Identity -PortalURL $PortalURL -creds $creds
+        }Else{
+            $headers = Authenticate-CyberArk -rebuildPortalURL $rebuildPortalURL -body $body -creds $creds
+        }
 
-    # If user didn't specificy types use default
-    if ($GetSpecificuserTypes -ne $null) {
+        Write-Host ""
+        Write-Host "Privilege Cloud consumed users report for tenant $PortalURL"
+        Write-Host "-----------------------------------------------------------------------"
+
+
+        Write-Host "Yellow Users = Inactive for more than $($InactiveDays) days" -ForegroundColor Black -BackgroundColor Yellow
         foreach ($userType in $GetSpecificuserTypes) {
             Get-UserType -UserType $userType
         }
+
+        # logoff
+        Logoff -LogoffUrl $LogoffPlatform -headers $headers -auth $AuthType
     }
-    else {
-        $userTypeFilters = [ordered]@{
-            "EPVUser" = $null
-            "EPVUserLite" = $null
-            "BasicUser" = $null
-            "ExtUser" = $null
-            "AppProvider" = $null
-            "CPM" = $null
-            "PSM" = $null
+    Else
+    {
+        if($AuthType -eq "cyberark" -and $ReportType -eq "CapacityReport"){
+            # Get Auth
+            $headers = Authenticate-CyberArk -rebuildPortalURL $rebuildPortalURL -creds $creds
+
+            Write-Host "Privilege Cloud Capacity report for tenant $PortalURL"
+            Write-Host "-----------------------------------------------------------------------"
+            
+            Get-LicenseCapacityReport -vaultIp $VaultURL -GetSpecificuserTypes $GetSpecificuserTypes
+        }Else{
+            # If Identity auth, not supported with casos.
+            Write-Host "You can't use $AuthType for Get-LicenseCapacityReport, use AuthType Cyberark instead, or rerun different report type with '-ReportType DetailedReport' flag." -ForegroundColor Yellow
+            Pause
+            Exit
         }
-        # Defaults
-        foreach ($filterKey in $userTypeFilters.Keys) {
-            Get-UserType -UserType $filterKey
-        }
+        # logoff
+        Logoff -LogoffUrl $rebuildPortalURL -headers $headers -auth $AuthType -reportType $ReportType
     }
 
 
-
-
-    # Logoff
-    Write-Host "Logging off..."
-    if ($AuthType -eq "cyberark") {
-        $uri = "$rebuildPortalURL/PasswordVault/API/Auth/Logoff/"
-        Invoke-WebRequest -Uri $uri -Method Post -Headers $headers -ContentType "application/json" | Out-Null
-    } else {
-        Invoke-RestMethod -Uri $LogoffPlatform -Method Post -Headers $headers | Out-Null
-    }
 
 } catch {
     Write-Host "Error: $($_.Exception.Message)" -ForegroundColor Red
