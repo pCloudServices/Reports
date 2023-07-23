@@ -225,6 +225,12 @@ try {
         Authenticate-Identity -PortalURL $PortalURL -creds $creds
     }
 
+
+    Write-Host ""
+    Write-Host "Privilege Cloud consumed users report for tenant $PortalURL"
+    Write-Host "-----------------------------------------------------------------------"
+    Write-Host "Yellow Users = Inactive for more than $($InactiveDays) days" -ForegroundColor Black -BackgroundColor Yellow
+
     # If user didn't specificy types use default
     if ($GetSpecificuserTypes -ne $null) {
         foreach ($userType in $GetSpecificuserTypes) {
@@ -241,16 +247,14 @@ try {
             "CPM" = $null
             "PSM" = $null
         }
+        # Defaults
+        foreach ($filterKey in $userTypeFilters.Keys) {
+            Get-UserType -UserType $filterKey
+        }
     }
 
-    Write-Host ""
-    Write-Host "Privilege Cloud consumed users report for tenant $PortalURL"
-    Write-Host "-----------------------------------------------------------------------"
-    Write-Host "Yellow Users = Inactive for more than $($InactiveDays) days" -ForegroundColor Black -BackgroundColor Yellow
 
-    foreach ($filterKey in $userTypeFilters.Keys) {
-        Get-UserType -UserType $filterKey
-    }
+
 
     # Logoff
     Write-Host "Logging off..."
