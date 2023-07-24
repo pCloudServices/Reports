@@ -1,45 +1,54 @@
 **Privilege Cloud License Capacity User Report**
--------------
 
-Description:
--------------
-This Script generates two report types: Capacity Report and Detailed Report, each offer different useful things.
+**Introduction:**
+The Privilege Cloud License Capacity User Report script is a PowerShell tool designed to generate comprehensive reports of users consuming resources in the Privilege Cloud for a specific tenant URL. 
 
-Prerequisites:
-----------------
-1. You need HTTPS + CyberArk Port 1858 access to a Privilege Cloud tenant.
- - Capacity Report = 1858
- - Detailed User Report = HTTPS.
-2. Depending on the authentication type chosen, you may need one of the following:
-   - For 'cyberark' authentication, you need a valid CyberArk account with appropriate access permissions. You can use the default users we provide:
- 	for standard = <subdomain>_admin
-	for ISP      = installeruser@cyberark.cloud.#
-   - For 'identity' authentication, you need a valid account in your ISPSS tenant, with a strong privilege cloud admin role. Take note, with identity auth you won't be able to pull Capacity Report, only Detailed Report.
+**Prerequisites:**
+1. Must execute from a machine that can reach the tenant via CyberArk Port 1858
 
-Usage:
-------
-1. Run the script with the following command:
+2. Must execute from a machine that can reach the tenant via HTTPs
 
-PS> .\PrivilegeCloudConsumedUserReport.ps1 -PortalURL "<your_tenant_url>" -AuthType "<authentication_type>" [-InactiveDays <number_of_days>] [-ExportToCSV] [-GetSpecificuserTypes <user_types>] [-ReportType <Report_Type>]
+3. Privilege Cloud Tenant URL, Example `https://<subdomain>.cyberark.cloud`.
 
-Parameters:
-- `-PortalURL`: (Required) Specifies the URL of your Privilege Cloud tenant, e.g., https://<subdomain>.cyberark.cloud.
+4. Local CyberArk Account (for STD we recommend admin_<subdomain>. for ISPSS installeruser@<suffix>
 
-- `-AuthType`: (Optional) Specifies the authentication type for accessing Privilege Cloud. Valid values are 'cyberark' or 'identity'. Default cyberark.
 
-- `-InactiveDays`: (Optional) Specifies the number of days to consider users as inactive. Default is 60 days.
+**Flag Options:**
 
-- `-ExportToCSV`: (Optional) If specified, the results will be exported to a CSV file.
+1. `-PortalURL` (Mandatory):
+   - Specifies the URL of the Privilege Cloud tenant. Example: `-PortalURL "https://<subdomain>.cyberark.cloud"`
 
-- `-GetSpecificuserTypes`: (Optional) Specify the user types you want to get a report on. By default, the script generates a report for the following user types: EPVUser, EPVUserLite, BasicUser, ExtUser, CPM, PSM, AppProvider. You can provide multiple user types separated by commas.
+2. `-AuthType` (Optional):
+   - Specifies the authentication type for accessing Privilege Cloud. Default value: `cyberark`
+   - Valid values: `cyberark`
 
-- `-ReportType`: (Optional) allows you to choose between 'CapacityReport' and 'DetailedReport'. CapacityReport provides a summary of license capacity, while DetailedReport gives a more comprehensive user-based report. Default CapacityReport
+3. `-InactiveDays` (Optional):
+   - Specifies the number of days to consider users as inactive. Default value: `60`
+   - Example: `-InactiveDays 90`
 
-Example:
-PS> .\PrivilegeCloudConsumedUserReport.ps1 -PortalURL "https://mikeb.cyberark.cloud" -AuthType "Identity" -ExportToCSV
+4. `-ExportToCSV` (Switch):
+   - If this switch is specified, the results will be exported to a CSV file. If not specified, results will be printed in the PowerShell console.
 
-2. The report will be generated and displayed in the PowerShell console. If the `-ExportToCSV` switch is used, the report will also be saved as individual CSV files for each user type.
+5. `-GetSpecificUserTypes` (Optional):
+   - Specifies the user types to generate a report on. Default values: `EPVUser, EPVUserLite, BasicUser, ExtUser, CPM, PSM, AppProvider`
+   - Example: `-GetSpecificUserTypes "EPVUser", "BasicUser"`
 
+6. `-ReportType` (Optional):
+   - Specifies the type of report to generate. Default value: `CapacityReport`
+   - Valid values: `CapacityReport`, `DetailedReport`
+   - Example: `-ReportType DetailedReport`
+
+**Examples:**
+
+1. License Capacity Report:
+   ```
+   .\PrivilegeCloudConsumedUserReport.ps1 -PortalURL "https://<subdomain>.cyberark.cloud" -AuthType "cyberark" -InactiveDays 60 -ReportType CapacityReport
+   ```
+
+2. Detailed Report for Specific User Types:
+   ```
+   .\PrivilegeCloudConsumedUserReport.ps1 -PortalURL "https://<subdomain>.cyberark.cloud" -AuthType "cyberark" -InactiveDays 90 -ExportToCSV -ReportType DetailedReport
+   ```
 
 Note:
 -----
