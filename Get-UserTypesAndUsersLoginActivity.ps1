@@ -44,7 +44,7 @@ param(
 )
 
 # Version
-[int]$Version = 3
+[int]$Version = 5
 
 
 function Authenticate-CyberArk {
@@ -157,6 +157,67 @@ Function Get-Choice{
 }
 
 
+Function CalcLicenseInfo() {
+    param(
+        [string]$licenseInfo
+    )
+    
+	$formats = @(
+		"M/d/yyyy h:mm:ss tt", # NA
+		"dd/MM/yyyy HH:mm:ss", # EU STD
+		"dd-MM-yyyy HH:mm:ss", # India
+		"yyyy/MM/dd HH:mm:ss", # East Asia (Japan, China, Korea)
+		"yyyy-MM-dd HH:mm:ss", # ISO 8601
+		"dd.MM.yyyy HH:mm:ss", # Central Europe (Germany, Austria, Switzerland, Russia)
+		"d.M.yyyy H:mm:ss",    # Short format without leading zeros (Some parts of Europe)
+		"dd/MM/yyyy h:mm:ss tt", # UK, Ireland, Australia
+		"MM-dd-yyyy HH:mm:ss",  # Philippines
+		"yyyyMMdd HH:mm:ss",   # Compact form
+		"d/M/yyyy h:mm:ss tt"   # Short format without leading zeros
+	)
+
+    $provider = [System.Globalization.CultureInfo]::InvariantCulture
+
+    $parsedSuccessfully = $false
+    foreach ($format in $formats) {
+        try {
+            $licenseExpirationDate = [DateTime]::ParseExact($licenseInfo, $format, $provider)
+            $parsedSuccessfully = $true
+            break
+        } catch {
+            # Do nothing; just try the next format
+        }
+    }
+
+    if (-not $parsedSuccessfully) {
+        Write-Error "Failed to parse date: $licenseInfo"
+        return
+    }
+
+    # Convert to local time
+    $global:licenseExpirationDateLocal = $licenseExpirationDate.ToLocalTime()
+
+    # Calculate the difference in days between the current date and the license expiration date
+    $currentDate = Get-Date
+    $daysToExpiration = ($licenseExpirationDateLocal - $currentDate).Days
+    
+    # Set the color based on the number of days to expiration
+    $global:lessThanXDays = ""
+    $global:Alertcolor = "Green"
+    if ($daysToExpiration -le 30) {
+        $global:Alertcolor = "Yellow"
+        $global:lessThanXDays = "Less than $daysToExpiration days remaining!"
+    }
+    if ($daysToExpiration -le 15) {
+        $global:Alertcolor = "Red"
+        $global:lessThanXDays = "Less than $daysToExpiration days remaining!"
+    }   
+}
+
+
+
+
+
 
 Function Get-LicenseCapacityReport(){
 param(
@@ -164,18 +225,27 @@ param(
  [string[]]$GetSpecificuserTypes
 )
 #Static
-$VaultOperationFolder = "$PSScriptRoot\VaultOperationsTester"
+$VaultOperationFolder1 = "$(Split-Path $PSScriptRoot -Parent)\VaultOperationsTester"
+$VaultOperationFolder2 = "$PSScriptRoot\VaultOperationsTester"
+
+
+ #Prereqs   
+if(Test-Path -Path "$VaultOperationFolder1\VaultOperationsTester.exe") {
+    $VaultOperationFolder = $VaultOperationFolder1
+} elseif(Test-Path -Path "$VaultOperationFolder2\VaultOperationsTester.exe") {
+    $VaultOperationFolder = $VaultOperationFolder2
+} else {
+    Write-LogMessage -Type Error -Msg "Required file 'VaultOperationsTester.exe' doesn't exist in expected folders: `"$VaultOperationFolder1`" or `"$VaultOperationFolder2`". Make sure you get the latest version and extract it correctly from zip."
+    Pause
+    Return
+}
 $stdoutFile = "$VaultOperationFolder\Log\stdout.log"
 $LOG_FILE_PATH_CasosArchive = "$VaultOperationFolder\Log\old"
 
 $specificUserTypesString = $GetSpecificuserTypes -join ','
 
- #Prereqs   
- if(!(Test-Path -Path "$VaultOperationFolder\VaultOperationsTester.exe")){
-     Write-Host "Required folder doesn't exist: `"$VaultOperationFolder`". Make sure you get the latest version and extract it correctly from zip." -ForegroundColor Red
-     Pause
-     Return
- }
+ # Prereqs
+ # redis++
  if((Get-CimInstance -Class win32_product | where {$_.Name -like "Microsoft Visual C++ 2013 x86*"}) -eq $null){
     $CpmRedis = "$VaultOperationFolder\vcredist_x86.exe"
     Write-Host "Installing Redis++ x86 from $CpmRedis..." -ForegroundColor Gray
@@ -242,9 +312,14 @@ $specificUserTypesString = $GetSpecificuserTypes -join ','
                         # Once we have all the required information, add the user object to the array
                         $usersInfo += New-Object PSObject -Property $currentUserInfo
                     }
+                    elseif ($trimmedLine.StartsWith("License Expiration Date: ")) {
+                        $licenseInfo = $trimmedLine -replace "License Expiration Date: "
+                    }
                 }
                 
-                # Output the custom objects with "Name" as the leftmost property
+                # Output
+                CalcLicenseInfo -licenseInfo $licenseInfo
+                Write-Host "License Expiration Date: $licenseExpirationDateLocal $lessThanXDays" -ForegroundColor $Alertcolor
                 $usersInfo | Select-Object Name, "UserType Description", "Licensed Users", "Existing Users", "Currently Logged On Users" | Format-Table -AutoSize | Out-Host
                 Write-Host "-------------------------------------------------------------"
                 # Export the results to a CSV file
@@ -256,18 +331,24 @@ $specificUserTypesString = $GetSpecificuserTypes -join ','
                         $csvFilePath = ".\LicenseCapacityReport.csv"
                         $usersInfo | Select-Object Name, "UserType Description", "Licensed Users", "Existing Users", "Currently Logged On Users" | Export-Csv -Path $csvFilePath -NoTypeInformation -Force
                         Write-Host "Results exported to $csvFilePath" -ForegroundColor Cyan
+                        # Write license info to a text file
+                        $licenseFilePath = ".\LicenseExpirationDate.txt"
+                        "License Expiration Date: $licenseExpirationDateLocal" | Out-File $licenseFilePath -Force
+                        Write-Host "License exported to $licenseFilePath" -ForegroundColor Cyan
                     }
                 }
                 # otherwise flag present, we export to csv.
                 else {
                     $csvFilePath = ".\LicenseCapacityReport.csv"
                     $usersInfo | Select-Object Name, "UserType Description", "Licensed Users", "Existing Users", "Currently Logged On Users" | Export-Csv -Path $csvFilePath -NoTypeInformation -Force
-                    Write-Host "Results exported to $csvFilePath" -ForegroundColor Cyan  
+                    Write-Host "Results exported to $csvFilePath" -ForegroundColor Cyan
+                    # Write license info to a text file
+                    $licenseFilePath = ".\LicenseExpirationDate.txt"
+                    "License Expiration Date: $licenseExpirationDateLocal" | Out-File $licenseFilePath -Force
+                    Write-Host "License exported to $licenseFilePath" -ForegroundColor Cyan
                 }
 
                 Write-Host "To get more detailed report rerun the script with '-ReportType DetailedReport' flag." -ForegroundColor Magenta
-                 
-
             }
 }
 
@@ -353,6 +434,7 @@ function Get-UserType {
 
 # Main
 try {
+	write-Host "Script Version: $Version" -ForegroundColor Gray
     $creds = Get-Credential
 
     # grab the subdomain, depending how the user entered the url (hostname only or URL).
@@ -379,7 +461,7 @@ try {
 
     $rebuildPortalURL = $pvwaURL
     $VaultURL = $Vaultaddress
-    $AlreadyAnswered = $null
+    $global:AlreadyAnswered = $false
 
     # if reportType flag was not called
     if([string]::IsNullOrEmpty($ReportType)){
@@ -431,8 +513,8 @@ $creds = $null
 # SIG # Begin signature block
 # MIIqRgYJKoZIhvcNAQcCoIIqNzCCKjMCAQExDzANBglghkgBZQMEAgEFADB5Bgor
 # BgEEAYI3AgEEoGswaTA0BgorBgEEAYI3AgEeMCYCAwEAAAQQH8w7YFlLCE63JNLG
-# KX7zUQIBAAIBAAIBAAIBAAIBADAxMA0GCWCGSAFlAwQCAQUABCAIpz47LJK4ZuiK
-# 1ajW3ra8UrjOp2aXDfZdAbh64CFA0aCCGFcwggROMIIDNqADAgECAg0B7l8Wnf+X
+# KX7zUQIBAAIBAAIBAAIBAAIBADAxMA0GCWCGSAFlAwQCAQUABCChhvLFfVIao0ui
+# ssdZWwePN2rF8ftft3QwP0BIBWjUzKCCGFcwggROMIIDNqADAgECAg0B7l8Wnf+X
 # NStkZdZqMA0GCSqGSIb3DQEBCwUAMFcxCzAJBgNVBAYTAkJFMRkwFwYDVQQKExBH
 # bG9iYWxTaWduIG52LXNhMRAwDgYDVQQLEwdSb290IENBMRswGQYDVQQDExJHbG9i
 # YWxTaWduIFJvb3QgQ0EwHhcNMTgwOTE5MDAwMDAwWhcNMjgwMTI4MTIwMDAwWjBM
@@ -567,22 +649,22 @@ $creds = $null
 # QyBSNDUgRVYgQ29kZVNpZ25pbmcgQ0EgMjAyMAIMcE3E/BY6leBdVXwMMA0GCWCG
 # SAFlAwQCAQUAoHwwEAYKKwYBBAGCNwIBDDECMAAwGQYJKoZIhvcNAQkDMQwGCisG
 # AQQBgjcCAQQwHAYKKwYBBAGCNwIBCzEOMAwGCisGAQQBgjcCARUwLwYJKoZIhvcN
-# AQkEMSIEIDhy7h4JYQtxcvoi5HJHhc5XPvUtMOgE+owKDzlavHoyMA0GCSqGSIb3
-# DQEBAQUABIICACQGgX09CokSf3/5UgqZP+0oVaNqhBe/vAYrNUqfND+if/mFwkD/
-# Peid1e/N+8Ytx9r5JMQc0wkoATB7T/Mrpbq3iwknrg02V06S2of4bOT+9YUJPESU
-# GLfnHMvrIZ5fQrbWFdk3HsjasXWSVCN1s8reF9EZNcoGnbQXsQFFyzwJp7oHnsp6
-# PeYjmbRZPHilKKqjMhoZ6EAQV6xuoYFWpcCYKhYWy4qcMVzhiLaeXp2phRSbNX1q
-# cmdlfawF2r6djWhJHs/lxLqb5RR8d4x8WBAymsfroxrQZXvBJrE68D7RAuJyPFSY
-# Bv1PUoCGwMBLqtyT50O1tBfAcUcTKJImiREkFlvAnDwpmwIm9ryHhuYcsfHwCAGd
-# /nLWFWiZEDXcTrXzMABGD4DdV0CRACgRuIR+e3p+KSp86cGW+hhj1hgqHm4l3h30
-# LuKyusfyKnnBqg1kjbFDK7rar4683xC9VhCsSLusIerFKDzosiQQJJ+keG76RAfn
-# XGCF4JRGNf546fPaAJlX0kjuI+UGnrADKHU6I6MQX0Y9jaKj+vvsrQQ/peL4Vpdp
-# YblC3NG37vc2TXP+PQXLOFYfabbfTu12MDVwufwu7aJm3Af7AwR/jKubz0Ldf2jr
-# yxEvP3kOsjz2A5Oyr9FV8Ms5hywFNbmNlBlADc035Gy8pwVScfIv+0SeoYIOLDCC
+# AQkEMSIEIEJdjGtEvPv5ziqE4DRfkizWjjG9uIgQg6t1yqqu9RHfMA0GCSqGSIb3
+# DQEBAQUABIICAIZtRozSm6pWfaZ20pwwBMAYa3nElYhIy5MG1Qn1OKr2Sx66xx4p
+# WjFdJIoIXgmUkkal7G7Rokm/D3EY9JSUlMZGgcd1CK6DyRQE4MNOtK0kSBsdJbuY
+# janpevsS3x4XisAjSSYAU13nh+qTJkwh3/505aWf2azFcH6jDS7+bR3/yqILmbuP
+# fCMDq4usTh9rcsVvfDOTfuNM5CoeI7kQJ9PBdI7y85KgYeC2NcgMNzMzBEnlT0Gw
+# t/qrFC4FUang4ptm8Lq/YnryXorxLaikSNT6w1QyOwq/OUiXLxqOTCVj7mNWabQ+
+# kyGdnLfwllPdEL8n87af1IZWEYooxsLema2qUn5aiOyLZmussUFik9su5G3WcaEQ
+# 05BY8kmO20DoAvVpWje3ScNeNj7aJIVvLCVtrTC8PS58rmxrB/ofO9kGRQSE5QTp
+# NWLLpb8fmwKesXAhrscyT/sHgYvFdSLI2hi5itnVtZo6se1ugNVqq8OEJsxyZjsb
+# NyRlZ0rCOYpOD8sOBnByfNkKONrkFuEPZChB70xMcpBErk6+01rTcGUAAa9PW5vg
+# 7OvNnI+K7ySbtHRUK+HxPd9RXiUZQI0Lk12uoyfWfKojcFCLIDTTiROjGJVMCQrT
+# bfKRFsmpQtSuYYCJcw7wEBYecyTHDj6Cz62KYLyGOkZJ9bw/gRZXDR4soYIOLDCC
 # DigGCisGAQQBgjcDAwExgg4YMIIOFAYJKoZIhvcNAQcCoIIOBTCCDgECAQMxDTAL
 # BglghkgBZQMEAgEwgf8GCyqGSIb3DQEJEAEEoIHvBIHsMIHpAgEBBgtghkgBhvhF
-# AQcXAzAhMAkGBSsOAwIaBQAEFJfvu08JQ2ZioxbyL2bnAPIBYyLYAhUApjQdlxrE
-# Wa8BZZhTRkjIAngofB8YDzIwMjMwNzI0MjMzMTI4WjADAgEeoIGGpIGDMIGAMQsw
+# AQcXAzAhMAkGBSsOAwIaBQAEFDe1t6LcsVv7IJcIcugHsag7YPAaAhUAmQ8K2NKY
+# gZDFY49AOfzMGvHK6VoYDzIwMjMwODE1MDkxMzMxWjADAgEeoIGGpIGDMIGAMQsw
 # CQYDVQQGEwJVUzEdMBsGA1UEChMUU3ltYW50ZWMgQ29ycG9yYXRpb24xHzAdBgNV
 # BAsTFlN5bWFudGVjIFRydXN0IE5ldHdvcmsxMTAvBgNVBAMTKFN5bWFudGVjIFNI
 # QTI1NiBUaW1lU3RhbXBpbmcgU2lnbmVyIC0gRzOgggqLMIIFODCCBCCgAwIBAgIQ
@@ -646,13 +728,13 @@ $creds = $null
 # cG9yYXRpb24xHzAdBgNVBAsTFlN5bWFudGVjIFRydXN0IE5ldHdvcmsxKDAmBgNV
 # BAMTH1N5bWFudGVjIFNIQTI1NiBUaW1lU3RhbXBpbmcgQ0ECEHvU5a+6zAc/oQEj
 # BCJBTRIwCwYJYIZIAWUDBAIBoIGkMBoGCSqGSIb3DQEJAzENBgsqhkiG9w0BCRAB
-# BDAcBgkqhkiG9w0BCQUxDxcNMjMwNzI0MjMzMTI4WjAvBgkqhkiG9w0BCQQxIgQg
-# 9eSzGebgt/nkLQw/hchT8R+Y8wM4Rapt6ka9tLmVchYwNwYLKoZIhvcNAQkQAi8x
+# BDAcBgkqhkiG9w0BCQUxDxcNMjMwODE1MDkxMzMxWjAvBgkqhkiG9w0BCQQxIgQg
+# jOhvgVFOS65JrVds9geMJPlcCp4K0HTa4XrH5GYr0ewwNwYLKoZIhvcNAQkQAi8x
 # KDAmMCQwIgQgxHTOdgB9AjlODaXk3nwUxoD54oIBPP72U+9dtx/fYfgwCwYJKoZI
-# hvcNAQEBBIIBAHb6TKOR4uoLQ0Oq3SXk0mNDyPYGCXr2bOzOOt6xtZ7a4ormrLHv
-# dCAfkjtm32dOxCU5V+qmU8X5gucodOpoh5ClvbsaJZzW7aZ1Ju9q+25K3eyOtIas
-# DHHJjPKroCAgENsg1ISwAIjGIYUNuju39/G2Apv/U4sBKm0felqlbC2mPtOyDeOu
-# p5+sXHdEa7+ko6DJf6n3v4q0GntvoTFucmYPRwShDB859tNrvqjdPX3tcofDWSna
-# dMcEu/HgNp/XZIh4MkZpFFZ/8m6OnOJxxVhRm8c+KO/IV6f2fz+krJKXGtivMs7J
-# I7v3ahK4vwK/zMa2pxQeGPm4yJ9I9hpx32U=
+# hvcNAQEBBIIBACfSx0n9RQHmH7HZfgQy3bOnFB1QJPMStKcl6/xsutsJCidx2Hcv
+# NW1DP/eNCkGgFQJSs70HoewKBkvYZc6zB8pNKm/hAnlfxvB9Qlhqu4gpwopnY3+2
+# MtjTzkNUrBD4Lm75DQPC21qUOWErgpq7gJahhkPU5uQ9E/BBQXRCx9opLesYFokI
+# 2cMnwoOu7iCn9ZwBJcD6XGigDo4tlvYmmOPSF26d1Qqgaw7euNGzILgWbak/FQcD
+# eMD46ZP4hhBNN5+WVteyEwGxbys7nrjRryC/VSoKQN9MXKs2IxngcxIineNkfiyT
+# gHpSpuTEPmTzHglRSL4U9v829pueWVj9+RE=
 # SIG # End signature block
