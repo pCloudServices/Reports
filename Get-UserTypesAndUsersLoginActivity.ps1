@@ -44,7 +44,7 @@ param(
 )
 
 # Version
-[int]$Version = 5
+[int]$Version = 6
 
 
 function Authenticate-CyberArk {
@@ -162,19 +162,37 @@ Function CalcLicenseInfo() {
         [string]$licenseInfo
     )
     
-	$formats = @(
-		"M/d/yyyy h:mm:ss tt", # NA
-		"dd/MM/yyyy HH:mm:ss", # EU STD
-		"dd-MM-yyyy HH:mm:ss", # India
-		"yyyy/MM/dd HH:mm:ss", # East Asia (Japan, China, Korea)
-		"yyyy-MM-dd HH:mm:ss", # ISO 8601
-		"dd.MM.yyyy HH:mm:ss", # Central Europe (Germany, Austria, Switzerland, Russia)
-		"d.M.yyyy H:mm:ss",    # Short format without leading zeros (Some parts of Europe)
-		"dd/MM/yyyy h:mm:ss tt", # UK, Ireland, Australia
-		"MM-dd-yyyy HH:mm:ss",  # Philippines
-		"yyyyMMdd HH:mm:ss",   # Compact form
-		"d/M/yyyy h:mm:ss tt"   # Short format without leading zeros
-	)
+$formats = @(
+    "M/d/yyyy h:mm:ss tt",    # NA
+    "MM/dd/yyyy hh:mm:ss tt", # NA with leading zeros
+    "d/M/yyyy HH:mm:ss",      # EU STD without leading zeros
+    "dd/M/yyyy HH:mm:ss",     # EU STD with/without leading zeros
+    "dd/MM/yyyy HH:mm:ss",    # EU STD with leading zeros
+    "dd-MM-yyyy HH:mm:ss",    # India
+    "yyyy/MM/dd HH:mm:ss",    # East Asia (Japan, China, Korea)
+    "yyyy-MM-dd HH:mm:ss",    # ISO 8601
+    "dd.MM.yyyy HH:mm:ss",    # Central Europe (Germany, Austria, Switzerland, Russia)
+    "d.M.yyyy H:mm:ss",       # Short format without leading zeros (Some parts of Europe)
+    "dd/MM/yyyy h:mm:ss tt",  # UK, Ireland, Australia
+    "MM-dd-yyyy HH:mm:ss",    # Philippines
+    "yyyyMMdd HH:mm:ss",      # Compact form
+    "d/M/yyyy h:mm:ss tt",    # Short format without leading zeros
+    "M-d-yyyy hh:mm:ss tt",   # Variations with dash separator
+    "d-M-yyyy HH:mm:ss",      # Variations with/without leading zeros and 24-hour format
+    "d/MM/yyyy h:mm tt",      # Without seconds
+    "M/dd/yyyy HH:mm:ss",     # Variations with/without leading zeros and 24-hour format
+    "MM/dd/yyyy H:mm:ss",     # Variations with leading zeros and 24-hour format
+    "d-M-yyyy hh:mm:ss tt",   # 12-hour format variations with/without leading zeros
+    "MM-d-yyyy hh:mm:ss tt",  # 12-hour format variations with leading zeros
+    "M.d.yyyy hh:mm:ss tt",   # Dot separator variations
+    "dd.MM.yyyy h:mm:ss tt",  # Dot separator variations with leading zeros
+    "MM.dd.yyyy HH:mm:ss",    # Dot separator variations with 24-hour format
+    "d.M.yyyy HH:mm:ss",      # 24-hour format variations with/without leading zeros
+    "yyyy.MM.dd HH:mm:ss",    # ISO variations with dot separator
+    "yyyy-MM.dd HH:mm:ss tt", # ISO variations with mixed separators
+    "yyyy/MM.dd hh:mm:ss tt"  # ISO variations with mixed separators and 12-hour format
+)
+
 
     $provider = [System.Globalization.CultureInfo]::InvariantCulture
 
@@ -510,11 +528,12 @@ $creds = $null
     Write-Host "Error Details: $($_.ErrorDetails.Message)" -ForegroundColor Red
     Write-Host "Exiting..."
 }
+
 # SIG # Begin signature block
 # MIIqRgYJKoZIhvcNAQcCoIIqNzCCKjMCAQExDzANBglghkgBZQMEAgEFADB5Bgor
 # BgEEAYI3AgEEoGswaTA0BgorBgEEAYI3AgEeMCYCAwEAAAQQH8w7YFlLCE63JNLG
-# KX7zUQIBAAIBAAIBAAIBAAIBADAxMA0GCWCGSAFlAwQCAQUABCChhvLFfVIao0ui
-# ssdZWwePN2rF8ftft3QwP0BIBWjUzKCCGFcwggROMIIDNqADAgECAg0B7l8Wnf+X
+# KX7zUQIBAAIBAAIBAAIBAAIBADAxMA0GCWCGSAFlAwQCAQUABCA+u41d7q8cgAOe
+# j/IUnMsE7rqqOGLqb5WDSgXqzKjEE6CCGFcwggROMIIDNqADAgECAg0B7l8Wnf+X
 # NStkZdZqMA0GCSqGSIb3DQEBCwUAMFcxCzAJBgNVBAYTAkJFMRkwFwYDVQQKExBH
 # bG9iYWxTaWduIG52LXNhMRAwDgYDVQQLEwdSb290IENBMRswGQYDVQQDExJHbG9i
 # YWxTaWduIFJvb3QgQ0EwHhcNMTgwOTE5MDAwMDAwWhcNMjgwMTI4MTIwMDAwWjBM
@@ -649,22 +668,22 @@ $creds = $null
 # QyBSNDUgRVYgQ29kZVNpZ25pbmcgQ0EgMjAyMAIMcE3E/BY6leBdVXwMMA0GCWCG
 # SAFlAwQCAQUAoHwwEAYKKwYBBAGCNwIBDDECMAAwGQYJKoZIhvcNAQkDMQwGCisG
 # AQQBgjcCAQQwHAYKKwYBBAGCNwIBCzEOMAwGCisGAQQBgjcCARUwLwYJKoZIhvcN
-# AQkEMSIEIEJdjGtEvPv5ziqE4DRfkizWjjG9uIgQg6t1yqqu9RHfMA0GCSqGSIb3
-# DQEBAQUABIICAIZtRozSm6pWfaZ20pwwBMAYa3nElYhIy5MG1Qn1OKr2Sx66xx4p
-# WjFdJIoIXgmUkkal7G7Rokm/D3EY9JSUlMZGgcd1CK6DyRQE4MNOtK0kSBsdJbuY
-# janpevsS3x4XisAjSSYAU13nh+qTJkwh3/505aWf2azFcH6jDS7+bR3/yqILmbuP
-# fCMDq4usTh9rcsVvfDOTfuNM5CoeI7kQJ9PBdI7y85KgYeC2NcgMNzMzBEnlT0Gw
-# t/qrFC4FUang4ptm8Lq/YnryXorxLaikSNT6w1QyOwq/OUiXLxqOTCVj7mNWabQ+
-# kyGdnLfwllPdEL8n87af1IZWEYooxsLema2qUn5aiOyLZmussUFik9su5G3WcaEQ
-# 05BY8kmO20DoAvVpWje3ScNeNj7aJIVvLCVtrTC8PS58rmxrB/ofO9kGRQSE5QTp
-# NWLLpb8fmwKesXAhrscyT/sHgYvFdSLI2hi5itnVtZo6se1ugNVqq8OEJsxyZjsb
-# NyRlZ0rCOYpOD8sOBnByfNkKONrkFuEPZChB70xMcpBErk6+01rTcGUAAa9PW5vg
-# 7OvNnI+K7ySbtHRUK+HxPd9RXiUZQI0Lk12uoyfWfKojcFCLIDTTiROjGJVMCQrT
-# bfKRFsmpQtSuYYCJcw7wEBYecyTHDj6Cz62KYLyGOkZJ9bw/gRZXDR4soYIOLDCC
+# AQkEMSIEIOBUO1AaIbiGfNTKiywucQaYs1Y4IJr9ipLDLSVN8QR5MA0GCSqGSIb3
+# DQEBAQUABIICAKR7tJXuRwE1ifgJpmEAjv9SQ9ngv552yADASDdFHXcmDQuN2dHD
+# qTSUfyuOEbieUpmH+AsinteSC6UJ0CQuU92W+9DnN+RihQloHMC2YeUB5aqwf6Vk
+# eiNarIlsflj4j+uN9Ke/DwBrRPVBmyMoekj99R3vd8UXibjODY6RTWHi4M8A2hPM
+# 7KVUF1eY+9JIlJvrf7SPM99dUKzhIW2IsuPlRu/HozRZJ72g6sZv9KJct16t9Ifz
+# ewL04nsldNM8e4q6A794C3gJfekERaChL/uPM1jy9OkK1c97QemQHlKKjqEwUTDQ
+# kEqaItBpSIu6TzRz/4cmOANyYAWzOgHrEthO+6CKn2vf2H3SRNnQtPxyOXDoGJSA
+# +vh0ofEYGpuudfL0JqEhxWHseTztzswPavMZ/PvNqb48wJ3MLF/ZiSql2X+CNx8o
+# nfVILskkYdTQe5UGhf0C9IdAiOJBF9ti33O3aAApIbuStQ37BD0C7AuAgxUcVX92
+# uZmDNf7F6m3h0/+SjNxXcru2Ro8EJHYlfvSKJpzh8NLcv/Q13J7zocOOArUN1bu4
+# ax7dt3RpszwoGvyVDo5aOape7k3Sam3j7BNemDmZsvk6X7UdiZbZcGm38FPdBDdQ
+# vQAjzCwzvA/0k322UFrahU3K+e/cUpQ5AenQ6dkiVkn4WUqz2/nAQRZEoYIOLDCC
 # DigGCisGAQQBgjcDAwExgg4YMIIOFAYJKoZIhvcNAQcCoIIOBTCCDgECAQMxDTAL
 # BglghkgBZQMEAgEwgf8GCyqGSIb3DQEJEAEEoIHvBIHsMIHpAgEBBgtghkgBhvhF
-# AQcXAzAhMAkGBSsOAwIaBQAEFDe1t6LcsVv7IJcIcugHsag7YPAaAhUAmQ8K2NKY
-# gZDFY49AOfzMGvHK6VoYDzIwMjMwODE1MDkxMzMxWjADAgEeoIGGpIGDMIGAMQsw
+# AQcXAzAhMAkGBSsOAwIaBQAEFHLHO9TvZVU+KS+No8YUUYNMbNYuAhUA+mhOYggi
+# 5vgM8+P6jdfDiD7mGmQYDzIwMjMxMDAxMTEyMjU1WjADAgEeoIGGpIGDMIGAMQsw
 # CQYDVQQGEwJVUzEdMBsGA1UEChMUU3ltYW50ZWMgQ29ycG9yYXRpb24xHzAdBgNV
 # BAsTFlN5bWFudGVjIFRydXN0IE5ldHdvcmsxMTAvBgNVBAMTKFN5bWFudGVjIFNI
 # QTI1NiBUaW1lU3RhbXBpbmcgU2lnbmVyIC0gRzOgggqLMIIFODCCBCCgAwIBAgIQ
@@ -728,13 +747,13 @@ $creds = $null
 # cG9yYXRpb24xHzAdBgNVBAsTFlN5bWFudGVjIFRydXN0IE5ldHdvcmsxKDAmBgNV
 # BAMTH1N5bWFudGVjIFNIQTI1NiBUaW1lU3RhbXBpbmcgQ0ECEHvU5a+6zAc/oQEj
 # BCJBTRIwCwYJYIZIAWUDBAIBoIGkMBoGCSqGSIb3DQEJAzENBgsqhkiG9w0BCRAB
-# BDAcBgkqhkiG9w0BCQUxDxcNMjMwODE1MDkxMzMxWjAvBgkqhkiG9w0BCQQxIgQg
-# jOhvgVFOS65JrVds9geMJPlcCp4K0HTa4XrH5GYr0ewwNwYLKoZIhvcNAQkQAi8x
+# BDAcBgkqhkiG9w0BCQUxDxcNMjMxMDAxMTEyMjU1WjAvBgkqhkiG9w0BCQQxIgQg
+# G3vqAuax5snK0hZU96gCtx3ScITErkoV+Z2a37R5+yUwNwYLKoZIhvcNAQkQAi8x
 # KDAmMCQwIgQgxHTOdgB9AjlODaXk3nwUxoD54oIBPP72U+9dtx/fYfgwCwYJKoZI
-# hvcNAQEBBIIBACfSx0n9RQHmH7HZfgQy3bOnFB1QJPMStKcl6/xsutsJCidx2Hcv
-# NW1DP/eNCkGgFQJSs70HoewKBkvYZc6zB8pNKm/hAnlfxvB9Qlhqu4gpwopnY3+2
-# MtjTzkNUrBD4Lm75DQPC21qUOWErgpq7gJahhkPU5uQ9E/BBQXRCx9opLesYFokI
-# 2cMnwoOu7iCn9ZwBJcD6XGigDo4tlvYmmOPSF26d1Qqgaw7euNGzILgWbak/FQcD
-# eMD46ZP4hhBNN5+WVteyEwGxbys7nrjRryC/VSoKQN9MXKs2IxngcxIineNkfiyT
-# gHpSpuTEPmTzHglRSL4U9v829pueWVj9+RE=
+# hvcNAQEBBIIBAKNH3m1+Is4kt7KPmb6k/jEprqnGVeWUKCb8KkaVrjIX+LQ0XSF2
+# MwaNxDbORXJPfJtedsgX7lWS4pH5b2efMiOIr/Zddji5gtHHHPBgldLHLN6lQZjd
+# Iwh4F+0AYtwePakumOPR4VGuHgQbKYQeGCA+fKZ00VSHIRKA0Yo/ub1CF0nvNLnD
+# uumsoBMX9fuCqq8XKHHpEJvASE1COG/N7k4BfzIQX++J1YVjEcHFrmI08+Kr8nz7
+# pl2RLuzlfb8U4zhVjVt4I5WcIV6uEwUd1KutH+RaB++1kHgXLEXynwjAOV1s0q0Z
+# 4o5boEMvfsbxrzWibz8FF1GZ88ZzVeJGx34=
 # SIG # End signature block
