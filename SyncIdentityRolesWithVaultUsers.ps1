@@ -72,7 +72,7 @@ Function Get-IdentityURL($PortalURL){
     # Create an HttpClientHandler to modify HttpClient behavior
     $handler = New-Object System.Net.Http.HttpClientHandler
     # Set to not follow redirections automatically
-    $handler.AllowAutoRedirect = $false
+    $handler.AllowAutoRedirect = $true
     
     # Create an HttpClient with the handler
     $client = New-Object System.Net.Http.HttpClient($handler)
@@ -85,8 +85,8 @@ Function Get-IdentityURL($PortalURL){
         # Check if the response status code indicates a redirection
         if ($response.StatusCode -ge 300 -and $response.StatusCode -lt 400) {
             # Get the location header (redirection URL)
-            $redirectionUrl = $response.Headers.Location
-    
+            #$redirectionUrl = $response.Headers.Location
+            $redirectionUrl = $response.RequestMessage.RequestUri.Host
             # Extract the host from the redirection URL
             $IdentityHeaderURL = $redirectionUrl.Host
     
