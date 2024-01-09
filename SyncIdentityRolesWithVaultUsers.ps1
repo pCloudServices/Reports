@@ -83,7 +83,7 @@ Function Get-IdentityURL($PortalURL){
         $response = $client.GetAsync($BasePlatformURL).Result
     
         # Check if the response status code indicates a redirection
-        if ($response.StatusCode -ge 300 -and $response.StatusCode -lt 400) {
+        if (($response.StatusCode -ge 300 -and $response.StatusCode -lt 400) -or ($response.StatusCode -eq "OK")) {
             # Get the location header (redirection URL)
             #$redirectionUrl = $response.Headers.Location
             $redirectionUrl = $response.RequestMessage.RequestUri.Host
