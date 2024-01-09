@@ -449,7 +449,7 @@ Try{
 	   }
     	   Catch
 	   {
-    	    Write-LogMessage -type Info -MSG "Couldn't find users for type $(userType), skipping..."
+    	    Write-LogMessage -type Info -MSG "Couldn't find users for type $($userType), skipping..."
 	   }
         $respUsers.Users.username
         $VaultUsersAll += $respUsers.Users.username
