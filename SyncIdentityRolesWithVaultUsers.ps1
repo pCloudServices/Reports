@@ -413,38 +413,19 @@ Else{
 Write-LogMessage -type Info -MSG "Start retreieving Users under `"Privilege Cloud*`" Roles in identity"
 $allIdentityUsers = @()
 foreach ($role in $(Get-PrivCloudRoles).Row.ID){    
-$body = @"
-{
-    "Script": "@/lib/reports/compliance/mfa.js",
-    "Args": {
-        "PageNumber": 1,
-        "PageSize": 100,
-        "Limit": 100000,
-        "SortBy": "",
-        "Caching": -1,
-        "Parameters": [
-            {
-                "Name": "roleId",
-                "Value": "$($role)",
-                "Type": "Role",
-            }
-        ]
-    }
-}
-"@
     Try{
         Write-Host "Checking Role: $role" -ForegroundColor Gray
-        $resp = Invoke-RestMethod -Method Post -Uri "$IdaptiveBasePlatformURL/Redrock/Query" -ContentType "application/json" -Headers $IdentityHeaders -Body $body -ErrorVariable identityErr
-        # 
+        $resp  = Invoke-RestMethod -Method POST -Uri "$IdaptiveBasePlatformURL/PCloud/GetRoleMembers?roles=$($role)&startIndex=0&limit=5000" -ContentType "application/json" -Headers $IdentityHeaders -ErrorVariable identityErr
+
         #if(($resp.Result.Count -ge 1) -and ($resp.Result.Results.Row | Where {$_.Type -eq "User"}))
-        if(($resp.Result.Count -ge 1) -and ($resp.Result.Results.row.UserName -ge 1))
+        if(($resp.Result.Count -ge 1) -and ($resp.Result.users.UserName -ge 1))
         {
             Write-Host "Found Users under role: $role" -ForegroundColor Green
             Write-Host "=== Start List ===" -ForegroundColor Gray
             #($resp.Result.Results.Row | Where {$_.Type -eq "User"}).Name
             #($resp.Result.Results.Row | Where {$_.Type -eq "Role"}).Name
-            $resp.Result.Results.row.UserName
-            $allIdentityUsers += $resp.Result.Results.row.UserName
+            $resp.Result.users.UserName
+            $allIdentityUsers += $resp.Result.users.UserName
             Write-Host "=== End List ==="-ForegroundColor Gray
             #break
         }
@@ -462,15 +443,22 @@ Try{
     $VaultUsersAll = @()
     foreach ($userTYpe in $VaultUsersTypesTOCheck){
         Write-LogMessage -type Info -MSG "Retrieving Users under UserTYpe: $userTYpe" -Early
-        $respUsers = Invoke-RestMethod -Uri ("$($PVWA_GetallUsers)?UserType=$($userTYpe)") -Method Get -Headers $IdentityHeaders -ErrorVariable pvwaERR
+	Try{
+	   $respUsers = @()
+           $respUsers = Invoke-RestMethod -Uri ("$($PVWA_GetallUsers)?UserType=$($userTYpe)") -Method Get -Headers $IdentityHeaders -ErrorVariable pvwaERR
+	   }
+    	   Catch
+	   {
+    	    Write-LogMessage -type Info -MSG "Couldn't find users for type $(userType), skipping..."
+	   }
         $respUsers.Users.username
         $VaultUsersAll += $respUsers.Users.username
     }
     
     
     Write-LogMessage -type Info -MSG "Start comparing users..." -Early
-    $VaultUsersAll
-    $allIdentityUsers
+    $VaultUsersAll | out-file "VaultUsers.txt" -force
+    $allIdentityUsers | out-file "Identityusers.txt" -force
     # TODO this fails.
     $diff = Compare-Object -ReferenceObject @($VaultUsersAll | Select-Object) -DifferenceObject @($allIdentityUsers | Select-Object)
 
