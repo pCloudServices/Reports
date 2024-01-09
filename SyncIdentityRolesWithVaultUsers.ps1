@@ -88,7 +88,7 @@ Function Get-IdentityURL($PortalURL){
             #$redirectionUrl = $response.Headers.Location
             $redirectionUrl = $response.RequestMessage.RequestUri.Host
             # Extract the host from the redirection URL
-            $IdentityHeaderURL = $redirectionUrl.Host
+            $IdentityHeaderURL = $redirectionUrl
     
             # Output the result
             return $IdentityHeaderURL
