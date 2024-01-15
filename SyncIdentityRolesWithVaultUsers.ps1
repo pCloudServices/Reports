@@ -36,7 +36,7 @@ if (-not (Get-Module -Name IdentityAuth -ErrorAction SilentlyContinue)) {
 $ScriptLocation = Split-Path -Parent $MyInvocation.MyCommand.Path
 $global:LOG_FILE_PATH = "$ScriptLocation\_SyncIdentityRolesWithVaultUsers.log"
 
-[int]$scriptVersion = 1
+[int]$scriptVersion = 2
 
 
 Function Get-PrivCloudURL(){
@@ -412,29 +412,36 @@ Else{
 
 Write-LogMessage -type Info -MSG "Start retreieving Users under `"Privilege Cloud*`" Roles in identity"
 $allIdentityUsers = @()
-foreach ($role in $(Get-PrivCloudRoles).Row.ID){    
-    Try{
+foreach ($role in $(Get-PrivCloudRoles).Row.ID) {
+   Try {
         Write-Host "Checking Role: $role" -ForegroundColor Gray
-        $resp  = Invoke-RestMethod -Method POST -Uri "$IdaptiveBasePlatformURL/PCloud/GetRoleMembers?roles=$($role)&startIndex=0&limit=5000" -ContentType "application/json" -Headers $IdentityHeaders -ErrorVariable identityErr
 
-        #if(($resp.Result.Count -ge 1) -and ($resp.Result.Results.Row | Where {$_.Type -eq "User"}))
-        if(($resp.Result.Count -ge 1) -and ($resp.Result.users.UserName -ge 1))
-        {
-            Write-Host "Found Users under role: $role" -ForegroundColor Green
-            Write-Host "=== Start List ===" -ForegroundColor Gray
-            #($resp.Result.Results.Row | Where {$_.Type -eq "User"}).Name
-            #($resp.Result.Results.Row | Where {$_.Type -eq "Role"}).Name
-            $resp.Result.users.UserName
-            $allIdentityUsers += $resp.Result.users.UserName
-            Write-Host "=== End List ==="-ForegroundColor Gray
-            #break
-        }
-    }
-    Catch{
+        $startIndex = 0
+        $limit = 500
+        do {
+            $uri = "$IdaptiveBasePlatformURL/PCloud/GetRoleMembers?roles=$role&startIndex=$startIndex&limit=$limit"
+            $resp = Invoke-RestMethod -Method POST -Uri $uri -ContentType "application/json" -Headers $IdentityHeaders -ErrorVariable identityErr
+
+            if ($resp.success -and $resp.Result.count -gt 0) {
+                Write-Host "Found $($resp.Result.count) Users under role: $role" -ForegroundColor Green
+                Write-Host "=== Start List ===" -ForegroundColor Gray
+                $resp.Result.users.UserName
+                $allIdentityUsers += $resp.Result.users.UserName
+                Write-Host "=== End List ===" -ForegroundColor Gray
+            }
+
+            # Increment startIndex for the next batch
+            $startIndex += $limit
+
+            # Continue while the current batch returns the maximum number of users
+        } while ($resp.Result.count -eq $limit)
+
+    } Catch {
         throw $identityErr.message + $_.exception.status + $_.exception.Response.ResponseUri.AbsoluteUri
     }
 }
-# Sort list by uniques
+
+# Sort list by uniques and filter out specific users
 $allIdentityUsers = $allIdentityUsers | Where-Object { $_ -notlike "installeruser*" } | Sort-Object -Unique
 
 Try{
