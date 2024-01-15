@@ -419,8 +419,10 @@ foreach ($role in $(Get-PrivCloudRoles).Row.ID) {
         $startIndex = 0
         $limit = 500
         do {
+            Write-Host "Start Index is $startIndex"
             $uri = "$IdaptiveBasePlatformURL/PCloud/GetRoleMembers?roles=$role&startIndex=$startIndex&limit=$limit"
             $resp = Invoke-RestMethod -Method POST -Uri $uri -ContentType "application/json" -Headers $IdentityHeaders -ErrorVariable identityErr
+            $resp
 
             if ($resp.success -and $resp.Result.count -gt 0) {
                 Write-Host "Found $($resp.Result.count) Users under role: $role" -ForegroundColor Green
