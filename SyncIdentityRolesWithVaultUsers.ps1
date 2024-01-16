@@ -411,9 +411,9 @@ Else{
 }
 
 Write-LogMessage -type Info -MSG "Start retreieving Users under `"Privilege Cloud*`" Roles in identity"
-$allIdentityUsers = @()
 
-foreach ($role in $PrivCloudRoles.Row.ID[0]) {
+$allIdentityUsers = @()
+foreach ($role in $(Get-PrivCloudRoles).Row.ID) {
     Try {
         Write-Host "Checking Role: $role" -ForegroundColor Gray
 
