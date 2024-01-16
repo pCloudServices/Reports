@@ -412,31 +412,33 @@ Else{
 
 Write-LogMessage -type Info -MSG "Start retreieving Users under `"Privilege Cloud*`" Roles in identity"
 $allIdentityUsers = @()
-foreach ($role in $(Get-PrivCloudRoles).Row.ID) {
-   Try {
+
+foreach ($role in $PrivCloudRoles.Row.ID[0]) {
+    Try {
         Write-Host "Checking Role: $role" -ForegroundColor Gray
 
         $startIndex = 0
         $limit = 500
+        $totalFetched = 0
+
         do {
-            Write-Host "Start Index is $startIndex"
             $uri = "$IdaptiveBasePlatformURL/PCloud/GetRoleMembers?roles=$role&startIndex=$startIndex&limit=$limit"
             $resp = Invoke-RestMethod -Method POST -Uri $uri -ContentType "application/json" -Headers $IdentityHeaders -ErrorVariable identityErr
-            $resp
 
             if ($resp.success -and $resp.Result.count -gt 0) {
-                Write-Host "Found $($resp.Result.count) Users under role: $role" -ForegroundColor Green
-                Write-Host "=== Start List ===" -ForegroundColor Gray
-                $resp.Result.users.UserName
+                Write-Host "Fetching users from index $startIndex" -ForegroundColor Green
+                #$resp.Result.users.UserName
                 $allIdentityUsers += $resp.Result.users.UserName
-                Write-Host "=== End List ===" -ForegroundColor Gray
+
+                # Update the total number of fetched users
+                $totalFetched += $resp.Result.users.UserName.Count
             }
 
             # Increment startIndex for the next batch
             $startIndex += $limit
 
-            # Continue while the current batch returns the maximum number of users
-        } while ($resp.Result.count -eq $limit)
+            # Check if we have fetched all available users
+        } while ($totalFetched -lt $resp.Result.count)
 
     } Catch {
         throw $identityErr.message + $_.exception.status + $_.exception.Response.ResponseUri.AbsoluteUri
@@ -460,7 +462,8 @@ Try{
 	   {
     	    Write-LogMessage -type Info -MSG "Couldn't find users for type $($userType), skipping..."
 	   }
-        $respUsers.Users.username
+        # TODO : comment this out so we can see the full output in powershell.
+        #$respUsers.Users.username
         $VaultUsersAll += $respUsers.Users.username
     }
     
