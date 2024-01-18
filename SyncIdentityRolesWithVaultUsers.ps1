@@ -429,6 +429,7 @@ foreach ($role in $(Get-PrivCloudRoles).Row.ID) {
                 Write-Host "Fetching users from index $startIndex" -ForegroundColor Green
                 #$resp.Result.users.UserName
                 $resp
+                $resp.Result.users.UserName | out-file "Identityusers_$($role)_$($totalFetched).txt" -force
                 $allIdentityUsers += $resp.Result.users.UserName
 
                 # Update the total number of fetched users
@@ -463,15 +464,15 @@ Try{
 	   {
     	    Write-LogMessage -type Info -MSG "Couldn't find users for type $($userType), skipping..."
 	   }
-        # TODO : comment this out so we can see the full output in powershell.
-        #$respUsers.Users.username
+        # Save each user type as output
+        $respUsers.Users.username | out-file "VaultUsers_$($userTYpe).txt" -force
         $VaultUsersAll += $respUsers.Users.username
     }
     
     
     Write-LogMessage -type Info -MSG "Start comparing users..." -Early
-    $VaultUsersAll | out-file "VaultUsers.txt" -force
-    $allIdentityUsers | out-file "Identityusers.txt" -force
+    $VaultUsersAll | out-file "VaultUsers_ALL.txt" -force
+    $allIdentityUsers | out-file "Identityusers_ALL.txt" -force
     # TODO this fails.
     $diff = Compare-Object -ReferenceObject @($VaultUsersAll | Select-Object) -DifferenceObject @($allIdentityUsers | Select-Object)
 
