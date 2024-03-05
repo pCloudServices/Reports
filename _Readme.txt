@@ -36,6 +36,8 @@ Parameters:
 
 - `-ReportType`: (Optional) allows you to choose between 'CapacityReport' and 'DetailedReport'. CapacityReport provides a summary of license capacity, while DetailedReport gives a more comprehensive user-based report. Default CapacityReport
 
+- `-Credentials`: (Optional) Specifies the credentials to use for authenticating with Privilege Cloud. If not specified, the script will prompt for credentials.
+
 Example:
 PS> .\PrivilegeCloudConsumedUserReport.ps1 -PortalURL "https://mikeb.cyberark.cloud" -AuthType "Identity" -ExportToCSV
 

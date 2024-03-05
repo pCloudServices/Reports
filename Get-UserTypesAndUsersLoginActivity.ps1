@@ -23,6 +23,8 @@
     Specifies the type of report to generate.
     Valid values are 'CapacityReport' and 'DetailedReport'.
     Default value: CapacityReport
+.PARAMETER Credentials
+    Specifies the credential to use for authenticating with Privilege Cloud. If not specified, the script will prompt for credentials.
 .EXAMPLE
     .\PrivilegeCloudConsumedUserReport.ps1 -PortalURL "https://<subdomain>.cyberark.cloud" -AuthType "cyberark" -InactiveDays 90 -ExportToCSV -GetSpecificUserTypes EPVUser, BasicUser -ReportType DetailedReport
     Generates a detailed report for EPVUser and BasicUser types in the Privilege Cloud, considering users inactive if their last login date is older than 90 days. The results will be exported to a CSV file.
@@ -40,7 +42,10 @@ param(
     [string[]]$GetSpecificuserTypes = @("EPVUser", "EPVUserLite", "BasicUser", "ExtUser", "BizUser", "AIMAccount", "AppProvider", "CCP", "CCPEndpoints", "CPM", "PSM"),
     [Parameter(Mandatory = $false, HelpMessage = "Specify the type of report to generate. Valid values are 'CapacityReport' and 'DetailedReport'.")]
     [ValidateSet("DetailedReport", "CapacityReport")]
-    [string]$ReportType
+    [string]$ReportType,
+    [Parameter(Mandatory = $false, HelpMessage = "Credentials to authenticate to the Vault with as a PSCredential object")]
+    [pscredential]
+    $Credentials
 )
 
 # Version
@@ -137,9 +142,9 @@ Function Get-Choice{
         $temp.UseVisualStyleBackColor = $True
         $temp.Text = $option
         $buttonX = ($index + 1) * $spacing + $index * $buttonWidth
-        $temp.Add_Click({ 
-                $script:result = $this.Text; 
-                $form.Close() 
+        $temp.Add_Click({
+                $script:result = $this.Text;
+                $form.Close()
             })
         $temp.Location = New-Object System.Drawing.Point($buttonX, $buttonY)
         $form.Controls.Add($temp)
@@ -161,7 +166,7 @@ Function CalcLicenseInfo() {
     param(
         [string]$licenseInfo
     )
-    
+
 $formats = @(
     "M/d/yyyy h:mm:ss tt",    # NA
     "MM/dd/yyyy hh:mm:ss tt", # NA with leading zeros
@@ -218,7 +223,7 @@ $formats = @(
     # Calculate the difference in days between the current date and the license expiration date
     $currentDate = Get-Date
     $daysToExpiration = ($licenseExpirationDateLocal - $currentDate).Days
-    
+
     # Set the color based on the number of days to expiration
     $global:lessThanXDays = ""
     $global:Alertcolor = "Green"
@@ -229,7 +234,7 @@ $formats = @(
     if ($daysToExpiration -le 15) {
         $global:Alertcolor = "Red"
         $global:lessThanXDays = "Less than $daysToExpiration days remaining!"
-    }   
+    }
 }
 
 
@@ -247,7 +252,7 @@ $VaultOperationFolder1 = "$(Split-Path $PSScriptRoot -Parent)\VaultOperationsTes
 $VaultOperationFolder2 = "$PSScriptRoot\VaultOperationsTester"
 
 
- #Prereqs   
+ #Prereqs
 if(Test-Path -Path "$VaultOperationFolder1\VaultOperationsTester.exe") {
     $VaultOperationFolder = $VaultOperationFolder1
 } elseif(Test-Path -Path "$VaultOperationFolder2\VaultOperationsTester.exe") {
@@ -268,7 +273,7 @@ $specificUserTypesString = $GetSpecificuserTypes -join ','
     $CpmRedis = "$VaultOperationFolder\vcredist_x86.exe"
     Write-Host "Installing Redis++ x86 from $CpmRedis..." -ForegroundColor Gray
     Start-Process -FilePath $CpmRedis -ArgumentList "/install /passive /norestart" -Wait
- }               
+ }
         #Cleanup log file if it gets too big
         if (Test-Path $LOG_FILE_PATH_CasosArchive)
         {
@@ -279,7 +284,7 @@ $specificUserTypesString = $GetSpecificuserTypes -join ','
                 Remove-Item $LOG_FILE_PATH_CasosArchive -Recurse -Force
             }
         }
-        
+
         #create log file
         New-Item -Path $stdoutFile -Force | Out-Null
 
@@ -298,11 +303,11 @@ $specificUserTypesString = $GetSpecificuserTypes -join ','
             Else{
                 $usersInfo = @()
                 $currentUserInfo = $null
-                
+
                 # extract information for each user
                 foreach ($line in $stdout) {
                     $trimmedLine = $line.Trim()
-                    
+
                     if ($trimmedLine -eq "Connecting to the vault...") {
                         # Reset the user information when we find the start marker
                         $currentUserInfo = @{
@@ -334,7 +339,7 @@ $specificUserTypesString = $GetSpecificuserTypes -join ','
                         $licenseInfo = $trimmedLine -replace "License Expiration Date: "
                     }
                 }
-                
+
                 # Output
                 CalcLicenseInfo -licenseInfo $licenseInfo
                 Write-Host "License Expiration Date: $licenseExpirationDateLocal $lessThanXDays" -ForegroundColor $Alertcolor
@@ -428,12 +433,12 @@ function Get-UserType {
 
             # Export the results to a CSV file
             if (-Not $ExportToCSV.IsPresent) {
-                
+
                 if(-not($AlreadyAnswered)){
                     $global:ExportCSVChoice = Get-Choice -Title "Export Results to CSV" -Options "Yes","No" -DefaultChoice 2
                     $global:AlreadyAnswered = $true
                 }
-            
+
                 if ($ExportCSVChoice -eq "Yes") {
                     $csvFilePath = "$UserType-UsersReport.csv"
                     $userInformation | Export-Csv -Path $csvFilePath -NoTypeInformation -Force
@@ -444,7 +449,7 @@ function Get-UserType {
             else {
                 $csvFilePath = "$UserType-UsersReport.csv"
                 $userInformation | Export-Csv -Path $csvFilePath -NoTypeInformation -Force
-                Write-Host "Results exported to $csvFilePath" -ForegroundColor Cyan  
+                Write-Host "Results exported to $csvFilePath" -ForegroundColor Cyan
             }
     }
 }
@@ -453,7 +458,12 @@ function Get-UserType {
 # Main
 try {
 	write-Host "Script Version: $Version" -ForegroundColor Gray
-    $creds = Get-Credential
+
+    if ($null -eq $Credentials) {
+        $creds = Get-Credential
+    } else {
+        $creds = $Credentials
+    }
 
     # grab the subdomain, depending how the user entered the url (hostname only or URL).
     if($script:PortalURL -match "https://"){
@@ -463,7 +473,7 @@ try {
     Else{
         $script:portalSubDomainURL = $PortalURL.Split(".")[0]
     }
-    
+
     # Check if standard or shared services implementation.
     if($PortalURL -like "*.cyberark.com*"){
         # Standard
@@ -497,7 +507,7 @@ try {
 
 
     If($ReportType -eq "DetailedReport"){
-       
+
         Write-Host ""
         Write-Host "Privilege Cloud consumed users report for tenant $PortalURL"
         Write-Host "-----------------------------------------------------------------------"
@@ -512,10 +522,10 @@ try {
     }
     Else
     {
-        
+
         Write-Host "Privilege Cloud Capacity report for tenant $PortalURL"
         Write-Host "-----------------------------------------------------------------------"
-        
+
         Get-LicenseCapacityReport -vaultIp $VaultURL -GetSpecificuserTypes $GetSpecificuserTypes
 
         # logoff is handed by casos
