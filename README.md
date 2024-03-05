@@ -1,7 +1,7 @@
 **Privilege Cloud License Capacity User Report**
 
 **Introduction:**
-The Privilege Cloud License Capacity User Report script is a PowerShell tool designed to generate comprehensive reports of users consuming resources in the Privilege Cloud for a specific tenant URL. 
+The Privilege Cloud License Capacity User Report script is a PowerShell tool designed to generate comprehensive reports of users consuming resources in the Privilege Cloud for a specific tenant URL.
 
 **Prerequisites:**
 1. Must execute from a machine that can reach the tenant via CyberArk Port 1858
@@ -37,6 +37,9 @@ The Privilege Cloud License Capacity User Report script is a PowerShell tool des
    - Specifies the type of report to generate. Default value: `CapacityReport`
    - Valid values: `CapacityReport`, `DetailedReport`
    - Example: `-ReportType DetailedReport`
+
+7. `-Credentials` (Optional):
+   - Specifies the credential to use for authenticating with Privilege Cloud. If not specified, the script will prompt for credentials.
 
 **Examples:**
 
