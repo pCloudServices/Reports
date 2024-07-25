@@ -1,6 +1,6 @@
 ﻿<#
 .SYNOPSIS
-    Privilege Cloud Discovered accounts export
+    Privilege Cloud Classic Discovered accounts export
 .DESCRIPTION
     This PowerShell script retrieves and exports discovered accounts from a Privilege Cloud environment. It may also be used to clear discovered accounts after export.
 .PARAMETER PortalURL
@@ -13,7 +13,7 @@
     Do not prompt for confirmation before clearing Discovered accounts.
     Default: false
 .EXAMPLE
-    .\Get-CPCDiscoveredAccounts.ps1 -PortalURL "https://<subdomain>.cyberark.cloud"
+    .\Get-CPCClassicDiscoveredAccounts.ps1 -PortalURL "https://<subdomain>.cyberark.cloud"
     Retrieves discovered accounts from Privilege Cloud. The results will be exported to a CSV file.
 #>
 param(
@@ -56,7 +56,7 @@ foreach ($modulePath in $modulePaths) {
 }
 
 $ScriptLocation = Split-Path -Parent $MyInvocation.MyCommand.Path
-$global:LOG_FILE_PATH = "$ScriptLocation\_Get-CPCDiscoveredAccounts.log"
+$global:LOG_FILE_PATH = "$ScriptLocation\_Get-CPCClassicDiscoveredAccounts.log"
 
 [int]$scriptVersion = 1
 
@@ -72,8 +72,8 @@ function Get-DiscoveredAccounts {
         [HashTable]$logonheader
     )
 
-    $URLAPI = ("$URLAPI" -replace "PasswordVault/", "")
-    $uri = $URLAPI + "/discovered-accounts/?limit=200"
+
+    $uri = $URLAPI + "/DiscoveredAccounts/?limit=200"
     $RetrievedSoFar = @()
 
     do {
@@ -85,10 +85,10 @@ function Get-DiscoveredAccounts {
             Write-Error "Error: $($_.Exception.Message) $($_.ErrorDetails.Message) $($_.Exception.Status)"
             return $false
         }
-        $uri = $URLAPI + ($response.nextCursor -replace "^\/api", "")
-        $RetrievedSoFar += $response.items
+        $uri = $URLAPI + ($response.nextLink -replace "^api", "")
+        $RetrievedSoFar += $response.value
     }
-    until ("" -eq $response.nextCursor)
+    until ($null -eq $response.nextLink)
 
     return $RetrievedSoFar
 }
@@ -99,8 +99,8 @@ function Clear-DiscoveredAccounts {
         [HashTable]$logonheader
     )
 
-    $URLAPI = ("$URLAPI" -replace "PasswordVault/", "")
-    $uri = "$URLAPI/discovered-accounts/clear"
+
+    $uri = "$URLAPI/DiscoveredAccounts/"
     try {
         $response = Invoke-RestMethod -Uri $uri -Headers $logonheader -Method DELETE -UseBasicParsing
     }
@@ -150,24 +150,24 @@ catch {
 $ConvertedDiscoveredAccounts = @()
 
 foreach ($Acc in $DiscoveredAccounts) {
-    #    If ($Acc.discoveryDateTime) { $Acc.discoveryDateTime = (([System.DateTimeOffset]::FromUnixTimeSeconds($Acc.discoveryDateTime)).DateTime).ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss") } else { $Acc.discoveryDateTime = $null }
-    #    If ($Acc.lastLogonDateTime) { $Acc.lastLogonDateTime = (([System.DateTimeOffset]::FromUnixTimeSeconds($Acc.lastLogonDateTime)).DateTime).ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss") } else { $Acc.lastLogonDateTime = $null }
-    #    If ($Acc.lastPasswordSetDateTime) { $Acc.lastPasswordSetDateTime = (([System.DateTimeOffset]::FromUnixTimeSeconds($Acc.lastPasswordSetDateTime)).DateTime).ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss") } else { $Acc.lastPasswordSetDateTime = $null }
+    If ($Acc.discoveryDateTime) { $Acc.discoveryDateTime = (([System.DateTimeOffset]::FromUnixTimeSeconds($Acc.discoveryDateTime)).DateTime).ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss") } else { $Acc.discoveryDateTime = $null }
+    If ($Acc.lastLogonDateTime) { $Acc.lastLogonDateTime = (([System.DateTimeOffset]::FromUnixTimeSeconds($Acc.lastLogonDateTime)).DateTime).ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss") } else { $Acc.lastLogonDateTime = $null }
+    If ($Acc.lastPasswordSetDateTime) { $Acc.lastPasswordSetDateTime = (([System.DateTimeOffset]::FromUnixTimeSeconds($Acc.lastPasswordSetDateTime)).DateTime).ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss") } else { $Acc.lastPasswordSetDateTime = $null }
     $ConvertedDiscoveredAccounts += $Acc
 }
 If ($ConvertedDiscoveredAccounts.Length -gt 0) {
     Write-LogMessage -type Success -MSG ("Retrieved {0} Discovered accounts" -f $ConvertedDiscoveredAccounts.Length)
     $DateStamp = Get-Date -Format yyyy-MM-dd_HH-mm-ss
     try {
-        $ConvertedDiscoveredAccounts | Export-Csv -NoTypeInformation -Path ".\DiscoveredAccounts-$DateStamp.csv"
-        Write-LogMessage -type Info -MSG "Discovered accounts exported to DiscoveredAccounts-$DateStamp.csv"
+        $ConvertedDiscoveredAccounts | Export-Csv -NoTypeInformation -Path ".\ClassicDiscoveredAccounts-$DateStamp.csv"
+        Write-LogMessage -type Info -MSG "Discovered accounts exported to ClassicDiscoveredAccounts-$DateStamp.csv"
     }
     catch {
-        Write-LogMessage -type Error -MSG "Error occurred exporting accounts to DiscoveredAccounts-$DateStamp.csv"
+        Write-LogMessage -type Error -MSG "Error occurred exporting accounts to ClassicDiscoveredAccounts-$DateStamp.csv"
         Write-LogMessage -type Error -MSG "Error: $($_.Exception.Message)" -ForegroundColor Red
         Write-LogMessage -type Error -MSG "Error Details: $($_.ErrorDetails.Message)" -ForegroundColor Red
     }
-    $ConvertedDiscoveredAccounts | ConvertTo-Json -Depth 5 | Out-File -FilePath ".\DiscoveredAccounts-$DateStamp.json"
+    $ConvertedDiscoveredAccounts | ConvertTo-Json -Depth 5 | Out-File -FilePath ".\ClassicDiscoveredAccounts-$DateStamp.json"
     If ($ClearDiscoveredAccounts) {
         $DoClearDiscoveredAccounts = $false
         If ($true -eq $Force) {
