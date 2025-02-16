@@ -1,20 +1,24 @@
-param(
+param (
     [ValidateScript({
-        If(![string]::IsNullOrEmpty($_)) {
+        if (!([string]::IsNullOrEmpty($_))) {
             $isValid = ($_ -like "*.privilegecloud.cyberark.com*") -or ($_ -like "*.cyberark.cloud*")
             if (-not $isValid) {
-                throw "Invalid URL format. Please specify a valid Privilege Cloud tenant URL (e.g.https://<subdomain>.cyberark.cloud)."
+                throw "Invalid URL format. Please specify a valid Privilege Cloud tenant URL (e.g., https://<subdomain>.cyberark.cloud)."
             }
             $true
-        }
-        Else {
+        } else {
             $true
         }
     })]
     [Parameter(Mandatory = $true, HelpMessage = "Specify the URL of the Privilege Cloud tenant (e.g., https://<subdomain>.cyberark.cloud)")]
     [string]$PortalURL,
-    [Parameter(Mandatory = $true, HelpMessage = "Specify a User that has permissions in both Identity User Management and Vault Audit User. (e.g. mike@cyberark.cloud.1022")]
-    [PSCredential]$Credentials
+    [Parameter(Mandatory = $true, HelpMessage = "Specify a User that has permissions in both Identity User Management and Vault Audit User. (e.g., mike@cyberark.cloud.1022")]
+    [PSCredential]$Credentials,
+    [Parameter(Mandatory = $false, HelpMessage = "Specify from which direction to sync the users 'sourceIdentity' or 'sourceVault' (Default: sourceIdentity).")]
+    [ValidateSet("sourceIdentity", "sourceVault")]
+    [string]$sourceOfTruth = "sourceVault",
+    # skipReloadRights flag (only relevant if sourceOfTruth is sourceVault) will use cached results for faster run, but less accurate.
+    [switch]$skipReloadRights
 )
 
 
@@ -47,68 +51,27 @@ foreach ($modulePath in $modulePaths) {
 
 $ScriptLocation = Split-Path -Parent $MyInvocation.MyCommand.Path
 $global:LOG_FILE_PATH = "$ScriptLocation\_SyncIdentityRolesWithVaultUsers.log"
-
-[int]$scriptVersion = 2
+[int]$scriptVersion = 7
 
 # PS Window title
 $Host.UI.RawUI.WindowTitle = "Privilege Cloud Sync Identity Roles with Vault Users Script"
-
 ## Force Output to be UTF8 (for OS with different languages)
 $OutputEncoding = [Console]::InputEncoding = [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding
 
+# Build URLs
+$platformURLs = DetermineTenantTypeURLs -PortalURL $PortalURL
+$IdentityAPIURL = $platformURLs.IdentityURL
+$pvwaAPI = $platformURLs.PVWA_API_URLs.PVWAAPI
 
-Function Get-PrivCloudURL(){
-    # grab the subdomain, depending how the user entered the url (hostname only or URL).
-    if($PortalURL -match "https://"){
-        $portalURL = ([System.Uri]$script:PortalURL).host
-        $script:portalSubDomainURL = $PortalURL.Split(".")[0]
-    }
-    Else{
-        $script:portalSubDomainURL = $PortalURL.Split(".")[0]
-    }
-    
-    # Check if standard or shared services implementation.
-    if($PortalURL -like "*.cyberark.com*"){
-        # Standard
-        $pvwaURL = "https://$portalSubDomainURL.privilegecloud.cyberark.com"
-    }
-    Else
-    {
-        # ispss
-        $pvwaURL = "https://$portalSubDomainURL.privilegecloud.cyberark.cloud"
-        $portalURL = "https://$portalSubDomainURL.cyberark.cloud"
-    }
-    return [PSCustomObject]@{pvwaURL = $pvwaURL; portalURL = $portalURL}
+# Privilege Cloud API
+$script:PVWA_GetallUsers = "$pvwaAPI/Users"
+$script:PVWA_GetUser = "$pvwaAPI/Users/{0}/"
+
+# Output
+$global:ExportDir = "$ScriptLocation\$(Get-Date -Format 'yyyyMMdd_HH-mm')"
+if (!(Test-Path -Path $global:ExportDir)) {
+    New-Item -ItemType Directory -Path $global:ExportDir | Out-Null
 }
-
-
-# Check if running user has sufficient permissions
-Function Get-IdentityPermissions($IdentityHeaders){
-    Try
-    {
-        $resp = Invoke-RestMethod -Uri "$IdaptiveBasePlatformURL/UserMgmt/GetUsersRolesAndAdministrativeRights" -Method Post -ContentType "application/json" -Headers $IdentityHeaders -ErrorVariable identityErr
-        #$resp.Result.Results.row.AdministrativeRights.Description -eq "User Management"
-    }
-    Catch
-    {
-        $identityErr.message + $_.exception.status + $_.exception.Response.ResponseUri.AbsoluteUri
-    }
-    Return $resp.Result.Results.row.AdministrativeRights.Description
-}
-
-
-Function Get-VaultPermissions($IdentityHeaders, $pvwaUser){
-    Try
-    {
-        $UserDetails = Invoke-RestMethod -Uri ("$PVWA_GetallUsers"+"?filter=UserName&search=$($pvwaUser)") -Method Get -ContentType "application/json" -Headers $IdentityHeaders -ErrorVariable identityErr
-    }
-    Catch
-    {
-        $identityErr.message + $_.exception.status + $_.exception.Response.ResponseUri.AbsoluteUri
-    }
-    Return $UserDetails.Users.vaultAuthorization
-}
-
 
 
 # Looking for all roles starting with "Privilege Cloud" in identity
@@ -116,7 +79,7 @@ Function Get-PrivCloudRoles(){
 
     Try{
         $body  = @{script = "Select Role.Name, ID from  Role ORDER BY Role COLLATE NOCASE"} | ConvertTo-Json -Compress
-        $response = Invoke-RestMethod -Method Post -Uri "$IdaptiveBasePlatformURL/Redrock/Query" -ContentType "application/json" -Headers $IdentityHeaders -Body $body -ErrorVariable identityErr
+        $response = Invoke-RestMethod -Method Post -Uri "$IdentityAPIURL/Redrock/Query" -ContentType "application/json" -Headers $logonheader -Body $body -ErrorVariable identityErr
         $PrivCloudROles = $response.Result.Results| where {$_.Row.Name -like "Privilege Cloud*"}
         }
     Catch{
@@ -137,8 +100,6 @@ Function Get-PrivCloudRoles(){
 }
 
 
-# Start Script here
-
 #Cleanup log file if it gets too big
 if (Test-Path $LOG_FILE_PATH)
 {
@@ -151,59 +112,12 @@ if (Test-Path $LOG_FILE_PATH)
 }
 
 
-# PVWA & Platform URL
-Write-LogMessage -type Info -MSG  "Retrieving Privilege Cloud URL" -Early
-$shellURLs = Get-PrivCloudURL
-if ($shellURLs.pvwaURL){
-    Write-LogMessage -type Info -MSG  "Privilege Cloud URL is: $($shellURLs.pvwaURL)"
-}Else{
-    Write-LogMessage -type Warning -MSG  "Unable to determine Privilege Cloud URL, Please enter it manually (eg `"https://mikeb.privilegecloud.cyberark.cloud`")"
-    $shellURLs.pvwaURL = Read-Host "Identity URL "
-}
-
-
-# Identity URL
-Write-LogMessage -type Info -MSG "Retrieving Identity URL by following redirect of $($PortalURL)..." -Early
-$IdentityURL = Get-IdentityURL -PortalURL $shellURLs.portalURL
-if ($IdentityURL){
-    Write-LogMessage -type Info -MSG  "Identity URL is: $IdentityURL"
-}Else{
-    Write-LogMessage -type Warning -MSG  "Unable to determine Identity URL, Please enter it manually (eg `"aax4550.id.cyberark.cloud`")"
-    $IdentityURL = Read-Host "Identity URL "
-}
-
-# Privilege Cloud API
-$script:PVWA_API = "$($shellURLs.pvwaURL)/PasswordVault/API"
-$script:PVWA_GetallUsers = "$PVWA_API/Users"
-$script:PVWA_GetUser = "$PVWA_API/Users/{0}/"
-
-# Identity API
-$script:IdaptiveBasePlatformURL = "https://$IdentityURL"
-
-# Creds
-If ([string]::IsNullOrEmpty($Credentials)) { 
-    $creds = Get-Credential -Message "Enter your Identity User and Password"
-} Else {
-    $creds = $Credentials
-}
-
 # Login
-IgnoreCertErrors
-Write-LogMessage -type Info -MSG "Authenticating to Identity to retrieve Token" -Early
-$IdentityHeaders = Get-IdentityHeader -IdentityTenantURL $IdentityURL -IdentityUserName $creds.UserName
-if($IdentityHeaders){
-    Write-LogMessage -type Success -MSG "Successful authentication"
-    $creds = $null
-}Else{
-    Write-LogMessage -type Error -MSG "Failed to authenticate to Identity...Exiting"
-    $creds = $null
-    Pause
-    Exit
-}
+Refresh-Token -PlatformURLs $platformURLs -creds $Credentials -ForceAuthType $ForceAuthType
 
 # Identity minimal permissions
 Write-LogMessage -type Info -MSG "Checking if we have sufficient permissions to perform the query in Identity..." -Early
-$IdentityPermission=$(Get-IdentityPermissions -IdentityHeaders $IdentityHeaders)
+$IdentityPermission=$(Get-IdentityPermissions -URLAPI $IdentityAPIURL -logonheader $logonheader)
 if (($IdentityPermission -eq "User Management") -or ($IdentityPermission -eq "All Rights")){
     Write-LogMessage -type Success -MSG "Passed minimal permissions requirement to perform query in Identity"
 }
@@ -216,7 +130,7 @@ Else{
 }
 
 Write-LogMessage -type Info -MSG "Checking if we have sufficient permissions to peform the query in Privilege Cloud..." -Early
-$PrivilegeCloudPermission=$(Get-VaultPermissions -IdentityHeaders $IdentityHeaders -pvwaUser $creds.UserName)
+$PrivilegeCloudPermission=$(Get-VaultPermissions -URLAPI $pvwaAPI -logonheader $logonheader -pvwaUser $Credentials.UserName)
 if ($PrivilegeCloudPermission -match "AuditUsers"){
      Write-LogMessage -type Success -MSG "Passed minimal permissions requirement to perform query in Privilege Cloud"
 }
@@ -228,101 +142,307 @@ Else{
     Exit
 }
 
-Write-LogMessage -type Info -MSG "Start retreieving Users under `"Privilege Cloud*`" Roles in identity"
+# if sourceOfTruth flag was not called
+if([string]::IsNullOrEmpty($sourceOfTruth)){
+    $selection = Get-Choice -Title "Choose Source of Truth" -Options "Identity","Vault" -DefaultChoice 1
+    if($selection -like "*Identity*"){
+        $script:sourceOfTruth = "sourceIdentity"
+    }Else{
+        $script:sourceOfTruth = "sourceVault"
+    }
+}
 
-$allIdentityUsers = @()
-foreach ($role in $(Get-PrivCloudRoles).Row.ID) {
-    Try {
-        Write-LogMessage -type Info -MSG "Checking Role: $role" -Early
 
-        $startIndex = 0
-        $limit = 500
-        $totalFetched = 0
+$sourceOfTruth = "sourceVault" # forcing this to Vault atm until we can overcome external timeouts from AD.
 
-        do {
-            $uri = "$IdaptiveBasePlatformURL/PCloud/GetRoleMembers?roles=$role&startIndex=$startIndex&limit=$limit"
-            $resp = Invoke-RestMethod -Method POST -Uri $uri -ContentType "application/json" -Headers $IdentityHeaders -ErrorVariable identityErr
 
-            if ($resp.success -and $resp.Result.count -gt 0) {
-                Write-LogMessage -type Info -MSG "Fetching users from index $startIndex" -Early
-                #$resp.Result.users.UserName
-                $resp
-                $resp.Result.users.UserName | out-file "Identityusers_$($role)_$($totalFetched).txt" -force
-                $allIdentityUsers += $resp.Result.users.UserName
+Switch ($sourceOfTruth)
+{
+    "sourceIdentity"
+    {
+        Write-LogMessage -type Info -MSG "Start retreieving Users under `"Privilege Cloud*`" Roles in identity"
+        $allIdentityUsers = @()
+        foreach ($role in $(Get-PrivCloudRoles).Row.ID) {
+            Try {
+                Write-LogMessage -type Info -MSG "Checking Role: $role" -Early
+        
+                $startIndex = 0
+                $limit = 100000
+                $totalFetched = 0
+        
+                do {
+                    # Handle token timeouts
+                    Refresh-Token -PlatformURLs $platformURLs -creds $Credentials -ForceAuthType $ForceAuthType
+        
+                    # Retrieve Role Members
+                    $uri = "$IdentityAPIURL/PCloud/GetRoleMembers?roles=$role&startIndex=$startIndex&limit=$limit"
+                    $resp = Invoke-RestMethod -Method POST -Uri $uri -ContentType "application/json" -Headers $logonheader -ErrorVariable identityErr
+                    $resp
+                    if ($resp.success -and $resp.Result.count -gt 0) {
+                        Write-LogMessage -type Info -MSG "Fetching users from index $startIndex" -Early
+                        #$resp.Result.users.UserName
+                        $resp
+                        $resp.Result.users.UserName | out-file "$ExportDir\Identityusers_$($role)_$($totalFetched).txt" -force
+                        $allIdentityUsers += $resp.Result.users.UserName
+        
+                        # Update the total number of fetched users
+                        $totalFetched += $resp.Result.users.UserName.Count
+                    }
+        
+                    # Increment startIndex for the next batch
+                    $startIndex += $limit
+        
+                    # Check if we have fetched all available users
+                } while ($totalFetched -lt $resp.Result.count)
+        
+            } Catch {
+                throw $identityErr.message + $_.exception.status + $_.exception.Response.ResponseUri.AbsoluteUri
+            }
+        }
+        
+        #Remove built-in user(s)
+        Write-LogMessage -type Info -MSG "Removed InstallerUser from the list..." -Early
+        $allIdentityUsers = $allIdentityUsers | Where-Object { $_ -notlike "installeruser*" } | Sort-Object -Unique
+        Write-LogMessage -type Info -MSG "Retrieved ($($allIdentityUsers.Count)) Users from Identity"
+        
+        
+        Try{
+            Refresh-Token -PlatformURLs $platformURLs -creds $Credentials -ForceAuthType $ForceAuthType
+            #Get Users from Vault
+            $VaultUsersTypesTOCheck = @("EPVUser", "EPVUserLite", "BasicUser", "ExtUser", "BizUser")
+            $VaultUsersAll = @()
+            foreach ($userTYpe in $VaultUsersTypesTOCheck){
+                Write-LogMessage -type Info -MSG "Retrieving Users under UserTYpe: $userTYpe" -Early
+        	Try{
+        	   $respUsers = @()
+                   $respUsers = Invoke-RestMethod -Uri ("$($PVWA_GetallUsers)?UserType=$($userTYpe)") -Method Get -Headers $logonheader -ErrorVariable pvwaERR
+                   Write-LogMessage -type Info -MSG "$userTYpe $($respUsers.total)" -Early
+                   $respUsers.Users.username | out-file "$ExportDir\VaultUsers_$($userTYpe).txt" -force
+                   if($respUsers.total -gt 0){
+                       $VaultUsersAll += $respUsers.Users.username
+                   }
+        	   }
+            	   Catch
+        	   {
+            	    Write-LogMessage -type Info -MSG "Couldn't find type $($userType) likely no license for it, skipping..." -Early
+        	   }
+                
+            }
+            
+            
+            Write-LogMessage -type Info -MSG "Start comparing users..." -Early
+            $VaultUsersAll | out-file "$ExportDir\VaultUsers_ALL.txt" -force
+            $allIdentityUsers | out-file "$ExportDir\Identityusers_ALL.txt" -force
+            # TODO this fails.
+            $diff = Compare-Object -ReferenceObject @($VaultUsersAll | Select-Object) -DifferenceObject @($allIdentityUsers | Select-Object)
+        
+            <#
+            $identityDiff = $diff | Where-Object { $_.SideIndicator -eq '=>' }
+            if ($identityDiff){
+                Write-Host "Users that exist in Identity but not in vault:" -ForegroundColor Yellow
+                $identityDiff.inputObject
+                $identityDiff.inputObject | Out-File "$ExportDir\IdentityUsersToDelete.txt" -Force
+                Write-Host "Exported to IdentityUsersToDelete.csv" -ForegroundColor Green
+            }
+            #>
+            
+            $vaultDiff = $diff | Where-Object { $_.SideIndicator -eq '<=' }
+            if ($vaultDiff){
+                Write-Host "Below Users exist in the Vault but do NOT exist in Identity: (recommend to analyze the list and delete these users as they are consuming vault license.)" -ForegroundColor Yellow
+                Start-Sleep 5
+                $vaultDiff.inputObject
+                $vaultDiff.inputObject | Out-File "$ExportDir\VaultUsersToDelete.txt" -Force
+                Write-Host "Exported to VaultUsersToDelete.csv" -ForegroundColor Green
+            }
+            
+            if (($identityDiff -eq $null) -and ($vaultDiff -eq $null)){
+                Write-LogMessage -type Success -MSG "No discrepancies found between Identity and Privilege Cloud Vault!"
+            }
+        }Catch{
+            Write-LogMessage -Type Error -Msg "Error: $(Collect-ExceptionMessage $_.exception.message $($_.ErrorDetails.Message) $($_.exception.status) $($_.exception.Response.ResponseUri.AbsoluteUri) $pvwaERR)"
+        }    
+    }
+    
+    "sourceVault"
+    {
+         Try{
+            Refresh-Token -PlatformURLs $platformURLs -creds $Credentials -ForceAuthType $ForceAuthType
+            #Get Users from Vault
+            $VaultUsersTypesTOCheck = @("EPVUser", "EPVUserLite", "BasicUser", "ExtUser", "BizUser")
+            $VaultUsersAll = @()
+            Write-LogMessage -type Info -MSG "Start retrieving users from Vault" -subHeader
+            foreach ($userTYpe in $VaultUsersTypesTOCheck)
+            {
+                Write-LogMessage -type Info -MSG "Retrieving Users under UserTYpe: $userTYpe" -Early
+        	    Try{
+                    $respUsers = @()
+                    $respUsers = Invoke-RestMethod -Uri ("$($PVWA_GetallUsers)?UserType=$($userTYpe)") -Method Get -Headers $logonheader -ErrorVariable pvwaERR
+                    Write-LogMessage -type Info -MSG "$userTYpe $($respUsers.total)" -Early
+                    # Save each user type as output
+                    $respUsers.Users.username | out-file "$ExportDir\VaultUsers_$($userTYpe).txt" -force
+                    if($respUsers.total -gt 0){
+                        $VaultUsersAll += $respUsers.Users.username
+                    }
+                   }
+                        Catch
+        	       {
+                        Write-LogMessage -type Info -MSG "Couldn't find type $($userType) likely no license for it, skipping..." -Early
+        	       }
+            }
+            Write-LogMessage -type Info -MSG "Done retrieving users from Vault" -subHeader
 
-                # Update the total number of fetched users
-                $totalFetched += $resp.Result.users.UserName.Count
+            # Get all Identity Users
+            $allIdentityUsers = @()
+            $pageNumber = 1
+            $resultsPerPage = 500
+            $hasMoreResults = $true
+                      
+            Write-LogMessage -type Info -MSG "Start retrieving users from Identity" -subHeader
+            while($hasMoreResults){  
+                Refresh-Token -PlatformURLs $platformURLs -creds $Credentials -ForceAuthType $ForceAuthType
+                $body = @{
+                    Script = "@@All Users"
+                    Args = @{
+                        Ascending = $true
+                        PageNumber = $pageNumber
+                        PageSize = $resultsPerPage
+                        Limit = 100000
+                        SortBy = "Username"
+                        Caching = -1
+                        Direction = "ASC"
+                    }
+                }
+                $body = $body | ConvertTo-Json -Depth 3
+                $resp = Invoke-RestMethod -Method Post -Uri "$IdentityAPIURL/Redrock/Query" -ContentType "application/json" -Headers $logonheader -Body $body -ErrorVariable identityErr
+                # if count bigger than 0 we move to next page
+                if ($resp.Result.Results.row.Count -gt 0) {
+                    Write-LogMessage -type Info -MSG "Total Users: $($resp.Result.Results.row.Count)" -early
+                    $allIdentityUsers += $resp.Result.Results.row
+                    # Move to the next page
+                    $pageNumber++
+                    Write-LogMessage -type Info -MSG "Checking next Index...$($pageNumber)" -Early
+                } else {
+                    # No more results, exit the loop
+                    Write-LogMessage -type Info -MSG "No more pages, proceeding to next step." -Early
+                    $hasMoreResults = $false
+                }
+                Start-Sleep -Seconds 1
+            }
+            
+            Write-LogMessage -type Info -MSG "Done retrieving users from Identity" -subHeader
+            Write-LogMessage -type Info -MSG "Comparing between the list of users..."
+            # Users that are both in vault and Identity
+            $matchingUsers = $allIdentityUsers | Where-Object { $VaultUsersAll -contains $_.Username }
+            # Users that are in vault but not in Identity
+            $unmatchedUsers = $VaultUsersAll | Where-Object { $allIdentityUsers.Username -notcontains $_ }
+
+            if($skipReloadRights.IsPresent){
+                Write-LogMessage -type Info -MSG "User selected running without Reload rights for each User" -early
+            }Else{
+                Write-LogMessage -type warning -MSG "Script will now reload rights for all matched users before checking if they are part of any Priv Cloud role."
+                Write-LogMessage -type warning -MSG "You can skip this process if changes to users were made 24h+ ago by running script with -skipReloadRights"
+                Write-LogMessage -type warning -MSG "We typically recommend reloading rights to reflect true status of the user in real time, but it also prolongs the run."
+                Start-Sleep 5
+                Write-LogMessage -type Info -MSG "Start reloading rights for each user before checking roles..." -early
+                foreach($identityUser in $matchingUsers){
+
+                    $ProvBody = @{
+                        UserData = @{
+                            Username = "$($identityUser.username)"
+                        }
+                    } | ConvertTo-Json -Depth 10 -Compress
+
+                    Refresh-Token -PlatformURLs $platformURLs -creds $Credentials -ForceAuthType $ForceAuthType
+                    Try{
+                        Write-LogMessage -type Info -MSG "Reloading Identity rights for User: $($identityUser.username)" -early
+                        Refresh-Token -PlatformURLs $platformURLs -creds $Credentials -ForceAuthType $ForceAuthType
+                        $respreloaduser = Invoke-RestMethod -Method Post -Uri "$IdentityAPIURL/CDirectoryService/RefreshToken?id=$($identityUser.ID)" -ContentType "application/json" -Headers $logonheader -Body $body -ErrorVariable identityErr
+                        Write-LogMessage -type Info -MSG "Reloading license userType for User: $($identityUser.username)" -early
+                        $respprovisionUser = Invoke-RestMethod -Method Post -Uri "$pvwaAPI/Provision/User"  -ContentType "application/json" -Headers $logonheader -Body $ProvBody -ErrorVariable identityErr
+                    }Catch{
+                        Write-LogMessage -Type Error -Msg "Error on user $($identityUser.username): $(Collect-ExceptionMessage $identityErr.message + $_.exception.status + $_.exception.Response.ResponseUri.AbsoluteUri $identityErr)"
+                    }
+                }
+                Write-LogMessage -type Info -MSG "Done reloading rights for each user" -early
             }
 
-            # Increment startIndex for the next batch
-            $startIndex += $limit
+            Write-LogMessage -type Info -MSG "Retrieving Priv Cloud roles..." -early
+            $PrivCloudRoles = $(Get-PrivCloudRoles).Row.ID
+            Write-LogMessage -type Info -MSG "Start checking if users part of any Privilege Cloud* role in Identity" -subHeader
+            $matchedUsersRoles = @()
+            $usersNoPcloudRoles = @()
+            foreach ($matchedUser in $matchingUsers) {    
+                Try {
+                    Refresh-Token -PlatformURLs $platformURLs -creds $Credentials -ForceAuthType $ForceAuthType
+                    Write-LogMessage -type Info -MSG "Checking User: $($matchedUser.username)" -early
+                    $respreloaduser = Invoke-RestMethod -Method Post -Uri "$IdentityAPIURL/UserMgmt/GetUsersRolesAndAdministrativeRights?id=$($matchedUser.ID)" -ContentType "application/json" -Headers $logonheader -Body $body -ErrorVariable identityErr
+            
+                    # Grab roles for user
+                    $userRoles = $respreloaduser.Result.Results.entities.key
+            
+                    # Find matching roles between user roles and PrivCloudRoles
+                    $matchingRoles = $userRoles | Where-Object { $PrivCloudRoles -contains $_ }
+            
+                    if ($matchingRoles) {
+                        Write-LogMessage -type Info -MSG "User $($matchedUser.username) has the following Privilege Cloud roles:" -early
+                        Write-Host ($matchingRoles -join "`n") -ForegroundColor DarkGray
+                        $matchedUsersRoles += [pscustomobject]@{
+                            Username = $matchedUser.username
+                            Roles   = ($matchingRoles -join ", ") # Join matching roles with commas
+                        }
 
-            # Check if we have fetched all available users
-        } while ($totalFetched -lt $resp.Result.count)
+                    } else {
+                        Write-LogMessage -type Warning -MSG "User $($matchedUser.username) does not have any matching Privilege Cloud roles."
+                        $usersNoPcloudRoles += $($matchedUser.username)
+                    }
+                } Catch {
+                    Write-LogMessage -Type Error -Msg "Error: $(Collect-ExceptionMessage $identityErr.message + $_.exception.status + $_.exception.Response.ResponseUri.AbsoluteUri $identityErr)"
+                }
+            }
 
-    } Catch {
-        throw $identityErr.message + $_.exception.status + $_.exception.Response.ResponseUri.AbsoluteUri
-    }
-}
+            $matchedUsersRoles | Export-Csv -Path "$ExportDir\IdentityUsersWithPcloudRoles.csv" -NoTypeInformation -Encoding UTF8
 
-# Sort list by uniques and filter out specific users
-$allIdentityUsers = $allIdentityUsers | Where-Object { $_ -notlike "installeruser*" } | Sort-Object -Unique
+            # announce Results and save to Excel.
+            if (!($usersNoPcloudRoles.Count -gt 0) -and !($unmatchedUsers.Count -gt 0)){
+                Write-LogMessage -type Success -MSG "No discrepancies found between Identity and Privilege Cloud Vault!"
+            }
+            Else
+            {
+                if($usersNoPcloudRoles){
+                    $totalCount = $usersNoPcloudRoles.Count
+                    $displayCount = [Math]::Min($totalCount, 50)
 
-Try{
-    #Get Users from Vault
-    $VaultUsersTypesTOCheck = @("EPVUser", "EPVUserLite", "BasicUser", "ExtUser", "BizUser")
-    $VaultUsersAll = @()
-    foreach ($userTYpe in $VaultUsersTypesTOCheck){
-        Write-LogMessage -type Info -MSG "Retrieving Users under UserTYpe: $userTYpe" -Early
-	Try{
-	   $respUsers = @()
-           $respUsers = Invoke-RestMethod -Uri ("$($PVWA_GetallUsers)?UserType=$($userTYpe)") -Method Get -Headers $IdentityHeaders -ErrorVariable pvwaERR
-	   }
-    	   Catch
-	   {
-    	    Write-LogMessage -type Info -MSG "Couldn't find users for type $($userType), skipping..."
-	   }
-        # Save each user type as output
-        $respUsers.Users.username | out-file "VaultUsers_$($userTYpe).txt" -force
-        $VaultUsersAll += $respUsers.Users.username
-    }
-    
-    
-    Write-LogMessage -type Info -MSG "Start comparing users..." -Early
-    $VaultUsersAll | out-file "VaultUsers_ALL.txt" -force
-    $allIdentityUsers | out-file "Identityusers_ALL.txt" -force
-    # TODO this fails.
-    $diff = Compare-Object -ReferenceObject @($VaultUsersAll | Select-Object) -DifferenceObject @($allIdentityUsers | Select-Object)
+                    Write-LogMessage -type Warning -MSG "Following Users should be removed from the Vault (Reason: do not belong to any Priv Cloud role in Identity):"
+                    Write-Host ""
+                    Write-LogMessage -type info -MSG "Showing $displayCount of $totalCount users:"
+                    $usersNoPcloudRoles | Select-Object -First $displayCount
+                    Write-Host ""
+                    $usersNoPcloudRoles | out-file "$ExportDir\vaultUsersToDelete_Reason_Not_In_PrivCloud_Role.txt" -force
+                    write-host "Results exported to $ExportDir\vaultUsersToDelete_Reason_Not_In_PrivCloud_Role.txt" -ForegroundColor Cyan
+                }
+                if($unmatchedUsers){
+                    $totalCount = $unmatchedUsers.Count
+                    $displayCount = [Math]::Min($totalCount, 50)
 
-    <#
-    $identityDiff = $diff | Where-Object { $_.SideIndicator -eq '=>' }
-    if ($identityDiff){
-        Write-Host "Users that exist in Identity but not in vault:" -ForegroundColor Yellow
-        $identityDiff.inputObject
-        $identityDiff.inputObject | Out-File "IdentityUsersToDelete.txt" -Force
-        Write-Host "Exported to IdentityUsersToDelete.csv" -ForegroundColor Green
+                    Write-LogMessage -type Warning -MSG "Following Users should be removed from the Vault (Reason: do not exist in Identity):"
+                    Write-Host ""
+                    Write-LogMessage -type info -MSG "Showing $displayCount of $totalCount users:"
+                    $unmatchedUsers | Select-Object -First $displayCount
+                    Write-Host ""
+                    $unmatchedUsers | out-file "$ExportDir\vaultUsersToDelete_Reason_Not_In_Identity.txt" -force
+                    write-host "Results exported to $ExportDir\vaultUsersToDelete_Reason_Not_In_Identity.txt" -ForegroundColor Cyan
+                }
+            }
+        }Catch{
+            Write-LogMessage -Type Error -Msg "Error: $(Collect-ExceptionMessage $_.exception.message $($_.ErrorDetails.Message) $($_.exception.status) $($_.exception.Response.ResponseUri.AbsoluteUri) $pvwaERR)"
+        }   
     }
-    #>
-    
-    $vaultDiff = $diff | Where-Object { $_.SideIndicator -eq '<=' }
-    if ($vaultDiff){
-        Write-Host "Users that exist in vault but not in Identity" -ForegroundColor Yellow
-        $vaultDiff.inputObject
-        $vaultDiff.inputObject | Out-File "VaultUsersToDelete.txt" -Force
-        Write-Host "Exported to VaultUsersToDelete.csv" -ForegroundColor Green
-    }
-    
-    if (($identityDiff -eq $null) -and ($vaultDiff -eq $null)){
-        Write-LogMessage -type Success -MSG "No discrepancies found between Identity and Privilege Cloud Vault!"
-    }
-}Catch{
-    Write-LogMessage -Type Error -Msg "Error: $(Collect-ExceptionMessage $_.exception.message $($_.ErrorDetails.Message) $($_.exception.status) $($_.exception.Response.ResponseUri.AbsoluteUri) $pvwaERR)"
 }
 # SIG # Begin signature block
-# MIIqRQYJKoZIhvcNAQcCoIIqNjCCKjICAQExDzANBglghkgBZQMEAgEFADB5Bgor
+# MIIzKQYJKoZIhvcNAQcCoIIzGjCCMxYCAQExDzANBglghkgBZQMEAgEFADB5Bgor
 # BgEEAYI3AgEEoGswaTA0BgorBgEEAYI3AgEeMCYCAwEAAAQQH8w7YFlLCE63JNLG
-# KX7zUQIBAAIBAAIBAAIBAAIBADAxMA0GCWCGSAFlAwQCAQUABCDa3xurfxxb277g
-# iLu9AgHHjY12khO7w+mIHfWYYEmP96CCGFcwggROMIIDNqADAgECAg0B7l8Wnf+X
+# KX7zUQIBAAIBAAIBAAIBAAIBADAxMA0GCWCGSAFlAwQCAQUABCAK8Uy9oPJH/98t
+# jKx405vnSQgzAB3Mlxfs27Xap7YhKqCCGJkwggROMIIDNqADAgECAg0B7l8Wnf+X
 # NStkZdZqMA0GCSqGSIb3DQEBCwUAMFcxCzAJBgNVBAYTAkJFMRkwFwYDVQQKExBH
 # bG9iYWxTaWduIG52LXNhMRAwDgYDVQQLEwdSb290IENBMRswGQYDVQQDExJHbG9i
 # YWxTaWduIFJvb3QgQ0EwHhcNMTgwOTE5MDAwMDAwWhcNMjgwMTI4MTIwMDAwWjBM
@@ -412,137 +532,184 @@ Try{
 # 12pxgL+W3nID2NgiK/MnFk846FFADK6S7749ffeAxkw2V4SVp4QVSDAOUicIjY6i
 # vSLHGcmmyg6oejbbarphXxEklaTijmjuGalJmV7QtDS91vlAxxCXMVI5NSkRhyTT
 # xPupY8t3SNX6Yvwk4AR6TtDkbt7OnjhQJvQhcWXXCSXUyQcAerjH83foxdTiVdDT
-# HvZ/UuJJjbkRcgyIRCYzZgFE3+QzDiHeYolIB9r1MIIHbzCCBVegAwIBAgIMcE3E
-# /BY6leBdVXwMMA0GCSqGSIb3DQEBCwUAMFwxCzAJBgNVBAYTAkJFMRkwFwYDVQQK
+# HvZ/UuJJjbkRcgyIRCYzZgFE3+QzDiHeYolIB9r1MIIHsTCCBZmgAwIBAgIMBmw4
+# iuAOfBdrKw0JMA0GCSqGSIb3DQEBCwUAMFwxCzAJBgNVBAYTAkJFMRkwFwYDVQQK
 # ExBHbG9iYWxTaWduIG52LXNhMTIwMAYDVQQDEylHbG9iYWxTaWduIEdDQyBSNDUg
-# RVYgQ29kZVNpZ25pbmcgQ0EgMjAyMDAeFw0yMjAyMTUxMzM4MzVaFw0yNTAyMTUx
-# MzM4MzVaMIHUMR0wGwYDVQQPDBRQcml2YXRlIE9yZ2FuaXphdGlvbjESMBAGA1UE
+# RVYgQ29kZVNpZ25pbmcgQ0EgMjAyMDAeFw0yNTAxMjgxMDI4MzNaFw0yODAxMjkx
+# MDI4MzNaMIH3MR0wGwYDVQQPDBRQcml2YXRlIE9yZ2FuaXphdGlvbjESMBAGA1UE
 # BRMJNTEyMjkxNjQyMRMwEQYLKwYBBAGCNzwCAQMTAklMMQswCQYDVQQGEwJJTDEQ
 # MA4GA1UECBMHQ2VudHJhbDEUMBIGA1UEBxMLUGV0YWggVGlrdmExEzARBgNVBAkT
 # CjkgSGFwc2Fnb3QxHzAdBgNVBAoTFkN5YmVyQXJrIFNvZnR3YXJlIEx0ZC4xHzAd
-# BgNVBAMTFkN5YmVyQXJrIFNvZnR3YXJlIEx0ZC4wggIiMA0GCSqGSIb3DQEBAQUA
-# A4ICDwAwggIKAoICAQDys9frIBUzrj7+oxAS21ansV0C+r1R+DEGtb5HQ225eEqe
-# NXTnOYgvrOIBLROU2tCq7nKma5qA5bNgoO0hxYQOboC5Ir5B5mmtbr1zRdhF0h/x
-# f/E1RrBcsZ7ksbqeCza4ca1yH2W3YYsxFYgucq+JLqXoXToc4CjD5ogNw0Y66R13
-# Km94WuowRs/tgox6SQHpzb/CF0fMNCJbpXQrzZen1dR7Gtt2cWkpZct9DCTONwbX
-# GZKIdBSmRIfjDYDMHNyz42J2iifkUQgVcZLZvUJwIDz4+jkODv/++fa2GKte06po
-# L5+M/WlQbua+tlAyDeVMdAD8tMvvxHdTPM1vgj11zzK5qVxgrXnmFFTe9knf9S2S
-# 0C8M8L97Cha2F5sbvs24pTxgjqXaUyDuMwVnX/9usgIPREaqGY8wr0ysHd6VK4wt
-# o7nroiF2uWnOaPgFEMJ8+4fRB/CSt6OyKQYQyjSUSt8dKMvc1qITQ8+gLg1budzp
-# aHhVrh7dUUVn3N2ehOwIomqTizXczEFuN0siQJx+ScxLECWg4X2HoiHNY7KVJE4D
-# L9Nl8YvmTNCrHNwiF1ctYcdZ1vPgMPerFhzqDUbdnCAU9Z/tVspBTcWwDGCIm+Yo
-# 9V458g3iJhNXi2iKVFHwpf8hoDU0ys30SID/9mE3cc41L+zoDGOMclNHb0Y5CQID
-# AQABo4IBtjCCAbIwDgYDVR0PAQH/BAQDAgeAMIGfBggrBgEFBQcBAQSBkjCBjzBM
-# BggrBgEFBQcwAoZAaHR0cDovL3NlY3VyZS5nbG9iYWxzaWduLmNvbS9jYWNlcnQv
-# Z3NnY2NyNDVldmNvZGVzaWduY2EyMDIwLmNydDA/BggrBgEFBQcwAYYzaHR0cDov
-# L29jc3AuZ2xvYmFsc2lnbi5jb20vZ3NnY2NyNDVldmNvZGVzaWduY2EyMDIwMFUG
-# A1UdIAROMEwwQQYJKwYBBAGgMgECMDQwMgYIKwYBBQUHAgEWJmh0dHBzOi8vd3d3
-# Lmdsb2JhbHNpZ24uY29tL3JlcG9zaXRvcnkvMAcGBWeBDAEDMAkGA1UdEwQCMAAw
-# RwYDVR0fBEAwPjA8oDqgOIY2aHR0cDovL2NybC5nbG9iYWxzaWduLmNvbS9nc2dj
-# Y3I0NWV2Y29kZXNpZ25jYTIwMjAuY3JsMBMGA1UdJQQMMAoGCCsGAQUFBwMDMB8G
-# A1UdIwQYMBaAFCWd0PxZCYZjxezzsRM7VxwDkjYRMB0GA1UdDgQWBBTRWDsgBgAr
-# Xx8j10jVgqJYDQPVsTANBgkqhkiG9w0BAQsFAAOCAgEAU50DXmYXBEgzng8gv8EN
-# mr1FT0g75g6UCgBhMkduJNj1mq8DWKxLoS11gomB0/8zJmhbtFmZxjkgNe9cWPvR
-# NZa992pb9Bwwwe1KqGJFvgv3Yu1HiVL6FYzZ+m0QKmX0EofbwsFl6Z0pLSOvIESr
-# ICa4SgUk0OTDHNBUo+Sy9qm+ZJjA+IEK3M/IdNGjkecsFekr8tQEm7x6kCArPoug
-# mOetMgXhTxGjCu1QLQjp/i6P6wpgTSJXf9PPCxMmynsxBKGggs+vX/vl9CNT/s+X
-# Z9sz764AUEKwdAdi9qv0ouyUU9fiD5wN204fPm8h3xBhmeEJ25WDNQa8QuZddHUV
-# hXugk2eHd5hdzmCbu9I0qVkHyXsuzqHyJwFXbNBuiMOIfQk4P/+mHraq+cynx6/2
-# a+G8tdEIjFxpTsJgjSA1W+D0s+LmPX+2zCoFz1cB8dQb1lhXFgKC/KcSacnlO4SH
-# oZ6wZE9s0guXjXwwWfgQ9BSrEHnVIyKEhzKq7r7eo6VyjwOzLXLSALQdzH66cNk+
-# w3yT6uG543Ydes+QAnZuwQl3tp0/LjbcUpsDttEI5zp1Y4UfU4YA18QbRGPD1F9y
-# wjzg6QqlDtFeV2kohxa5pgyV9jOyX4/x0mu74qADxWHsZNVvlRLMUZ4zI4y3KvX8
-# vZsjJFVKIsvyCgyXgNMM5Z4xghFEMIIRQAIBATBsMFwxCzAJBgNVBAYTAkJFMRkw
-# FwYDVQQKExBHbG9iYWxTaWduIG52LXNhMTIwMAYDVQQDEylHbG9iYWxTaWduIEdD
-# QyBSNDUgRVYgQ29kZVNpZ25pbmcgQ0EgMjAyMAIMcE3E/BY6leBdVXwMMA0GCWCG
-# SAFlAwQCAQUAoHwwEAYKKwYBBAGCNwIBDDECMAAwGQYJKoZIhvcNAQkDMQwGCisG
-# AQQBgjcCAQQwHAYKKwYBBAGCNwIBCzEOMAwGCisGAQQBgjcCARUwLwYJKoZIhvcN
-# AQkEMSIEIOoJK81asAcKsg2hWFg1RTSv+6O1N0HVh7hJ5qDsqBokMA0GCSqGSIb3
-# DQEBAQUABIICACKf/QJqYlCO3XS5W/rmPQhvXBUWI27wLs8c3vq92rXUO76oMV7g
-# F5LKj4CozP2qYA22N1wgBrpCZKHngFiDxtgyWxKThlNd9+6iP64bBZWj2ORgYFoJ
-# MqEkOCojnIVmdYjPO2WZPyIhAqmkvLFJeGEkJOcHAWMGrD70hY9NeNi/K46YVkBK
-# WAUrYs4yLJmZSj/9A405WD2CshOTfOIfpDWk51PUnAoT4c2aGGCjFZvP1bVzyiHn
-# pEF0NcjxqzvLTuMwDqMUfMm5BiPOrimDpyIur1ZjLfO59TWzz9pnU8O5u09bf33h
-# 66i3g/0CqRundeUYhx1QbTEzooq4zuDv4vaYIvj+nzH2oCGv0XVOBppVPoh39zYH
-# SGEJMZbKzwiU4HgHoTrK/DMPqAWzk+T7ABIQj42WOYAsma3VkMi3TefSdvSAxVq2
-# VkuqssieNovHlr0mlQa25vGwvVFxx7inW3LoXOUzOBmJ7OGich1BhLtm9r73FLi7
-# hv06vWKJXa5s4skrkFL9srk6KBZwkU5Eh8ZVkVQv8pEmR6s4+pnqR9p7+OANX1GV
-# Cu59A82wFTPrQPBDbQq/SkuIXz+1BgGPA1U051TXqTy0swznYgPFN+9vqi5wOTwZ
-# o1sI7bkiCYaRenpqTKwroYAupAKuVoG6XbFNQomlus5/lNqkTdXWqLbvoYIOKzCC
-# DicGCisGAQQBgjcDAwExgg4XMIIOEwYJKoZIhvcNAQcCoIIOBDCCDgACAQMxDTAL
-# BglghkgBZQMEAgEwgf4GCyqGSIb3DQEJEAEEoIHuBIHrMIHoAgEBBgtghkgBhvhF
-# AQcXAzAhMAkGBSsOAwIaBQAEFCOdUyIqLtrjaNXbWfRfyds/pPECAhQOYv2sfA4J
-# oyUi5VAtUVidi7cm5RgPMjAyNDAxMjMyMDEwMTNaMAMCAR6ggYakgYMwgYAxCzAJ
-# BgNVBAYTAlVTMR0wGwYDVQQKExRTeW1hbnRlYyBDb3Jwb3JhdGlvbjEfMB0GA1UE
-# CxMWU3ltYW50ZWMgVHJ1c3QgTmV0d29yazExMC8GA1UEAxMoU3ltYW50ZWMgU0hB
-# MjU2IFRpbWVTdGFtcGluZyBTaWduZXIgLSBHM6CCCoswggU4MIIEIKADAgECAhB7
-# BbHUSWhRRPfJidKcGZ0SMA0GCSqGSIb3DQEBCwUAMIG9MQswCQYDVQQGEwJVUzEX
-# MBUGA1UEChMOVmVyaVNpZ24sIEluYy4xHzAdBgNVBAsTFlZlcmlTaWduIFRydXN0
-# IE5ldHdvcmsxOjA4BgNVBAsTMShjKSAyMDA4IFZlcmlTaWduLCBJbmMuIC0gRm9y
-# IGF1dGhvcml6ZWQgdXNlIG9ubHkxODA2BgNVBAMTL1ZlcmlTaWduIFVuaXZlcnNh
-# bCBSb290IENlcnRpZmljYXRpb24gQXV0aG9yaXR5MB4XDTE2MDExMjAwMDAwMFoX
-# DTMxMDExMTIzNTk1OVowdzELMAkGA1UEBhMCVVMxHTAbBgNVBAoTFFN5bWFudGVj
-# IENvcnBvcmF0aW9uMR8wHQYDVQQLExZTeW1hbnRlYyBUcnVzdCBOZXR3b3JrMSgw
-# JgYDVQQDEx9TeW1hbnRlYyBTSEEyNTYgVGltZVN0YW1waW5nIENBMIIBIjANBgkq
-# hkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAu1mdWVVPnYxyXRqBoutV87ABrTxxrDKP
-# BWuGmicAMpdqTclkFEspu8LZKbku7GOz4c8/C1aQ+GIbfuumB+Lef15tQDjUkQbn
-# QXx5HMvLrRu/2JWR8/DubPitljkuf8EnuHg5xYSl7e2vh47Ojcdt6tKYtTofHjmd
-# w/SaqPSE4cTRfHHGBim0P+SDDSbDewg+TfkKtzNJ/8o71PWym0vhiJka9cDpMxTW
-# 38eA25Hu/rySV3J39M2ozP4J9ZM3vpWIasXc9LFL1M7oCZFftYR5NYp4rBkyjyPB
-# MkEbWQ6pPrHM+dYr77fY5NUdbRE6kvaTyZzjSO67Uw7UNpeGeMWhNwIDAQABo4IB
-# dzCCAXMwDgYDVR0PAQH/BAQDAgEGMBIGA1UdEwEB/wQIMAYBAf8CAQAwZgYDVR0g
-# BF8wXTBbBgtghkgBhvhFAQcXAzBMMCMGCCsGAQUFBwIBFhdodHRwczovL2Quc3lt
-# Y2IuY29tL2NwczAlBggrBgEFBQcCAjAZGhdodHRwczovL2Quc3ltY2IuY29tL3Jw
-# YTAuBggrBgEFBQcBAQQiMCAwHgYIKwYBBQUHMAGGEmh0dHA6Ly9zLnN5bWNkLmNv
-# bTA2BgNVHR8ELzAtMCugKaAnhiVodHRwOi8vcy5zeW1jYi5jb20vdW5pdmVyc2Fs
-# LXJvb3QuY3JsMBMGA1UdJQQMMAoGCCsGAQUFBwMIMCgGA1UdEQQhMB+kHTAbMRkw
-# FwYDVQQDExBUaW1lU3RhbXAtMjA0OC0zMB0GA1UdDgQWBBSvY9bKo06FcuCnvEHz
-# KaI4f4B1YjAfBgNVHSMEGDAWgBS2d/ppSEefUxLVwuoHMnYH0ZcHGTANBgkqhkiG
-# 9w0BAQsFAAOCAQEAdeqwLdU0GVwyRf4O4dRPpnjBb9fq3dxP86HIgYj3p48V5kAp
-# reZd9KLZVmSEcTAq3R5hF2YgVgaYGY1dcfL4l7wJ/RyRR8ni6I0D+8yQL9YKbE4z
-# 7Na0k8hMkGNIOUAhxN3WbomYPLWYl+ipBrcJyY9TV0GQL+EeTU7cyhB4bEJu8LbF
-# +GFcUvVO9muN90p6vvPN/QPX2fYDqA/jU/cKdezGdS6qZoUEmbf4Blfhxg726K/a
-# 7JsYH6q54zoAv86KlMsB257HOLsPUqvR45QDYApNoP4nbRQy/D+XQOG/mYnb5DkU
-# vdrk08PqK1qzlVhVBH3HmuwjA42FKtL/rqlhgTCCBUswggQzoAMCAQICEHvU5a+6
-# zAc/oQEjBCJBTRIwDQYJKoZIhvcNAQELBQAwdzELMAkGA1UEBhMCVVMxHTAbBgNV
-# BAoTFFN5bWFudGVjIENvcnBvcmF0aW9uMR8wHQYDVQQLExZTeW1hbnRlYyBUcnVz
-# dCBOZXR3b3JrMSgwJgYDVQQDEx9TeW1hbnRlYyBTSEEyNTYgVGltZVN0YW1waW5n
-# IENBMB4XDTE3MTIyMzAwMDAwMFoXDTI5MDMyMjIzNTk1OVowgYAxCzAJBgNVBAYT
-# AlVTMR0wGwYDVQQKExRTeW1hbnRlYyBDb3Jwb3JhdGlvbjEfMB0GA1UECxMWU3lt
-# YW50ZWMgVHJ1c3QgTmV0d29yazExMC8GA1UEAxMoU3ltYW50ZWMgU0hBMjU2IFRp
-# bWVTdGFtcGluZyBTaWduZXIgLSBHMzCCASIwDQYJKoZIhvcNAQEBBQADggEPADCC
-# AQoCggEBAK8Oiqr43L9pe1QXcUcJvY08gfh0FXdnkJz93k4Cnkt29uU2PmXVJCBt
-# MPndHYPpPydKM05tForkjUCNIqq+pwsb0ge2PLUaJCj4G3JRPcgJiCYIOvn6QyN1
-# R3AMs19bjwgdckhXZU2vAjxA9/TdMjiTP+UspvNZI8uA3hNN+RDJqgoYbFVhV9Hx
-# AizEtavybCPSnw0PGWythWJp/U6FwYpSMatb2Ml0UuNXbCK/VX9vygarP0q3InZl
-# 7Ow28paVgSYs/buYqgE4068lQJsJU/ApV4VYXuqFSEEhh+XetNMmsntAU1h5jlIx
-# Bk2UA0XEzjwD7LcA8joixbRv5e+wipsCAwEAAaOCAccwggHDMAwGA1UdEwEB/wQC
-# MAAwZgYDVR0gBF8wXTBbBgtghkgBhvhFAQcXAzBMMCMGCCsGAQUFBwIBFhdodHRw
-# czovL2Quc3ltY2IuY29tL2NwczAlBggrBgEFBQcCAjAZGhdodHRwczovL2Quc3lt
-# Y2IuY29tL3JwYTBABgNVHR8EOTA3MDWgM6Axhi9odHRwOi8vdHMtY3JsLndzLnN5
-# bWFudGVjLmNvbS9zaGEyNTYtdHNzLWNhLmNybDAWBgNVHSUBAf8EDDAKBggrBgEF
-# BQcDCDAOBgNVHQ8BAf8EBAMCB4AwdwYIKwYBBQUHAQEEazBpMCoGCCsGAQUFBzAB
-# hh5odHRwOi8vdHMtb2NzcC53cy5zeW1hbnRlYy5jb20wOwYIKwYBBQUHMAKGL2h0
-# dHA6Ly90cy1haWEud3Muc3ltYW50ZWMuY29tL3NoYTI1Ni10c3MtY2EuY2VyMCgG
-# A1UdEQQhMB+kHTAbMRkwFwYDVQQDExBUaW1lU3RhbXAtMjA0OC02MB0GA1UdDgQW
-# BBSlEwGpn4XMG24WHl87Map5NgB7HTAfBgNVHSMEGDAWgBSvY9bKo06FcuCnvEHz
-# KaI4f4B1YjANBgkqhkiG9w0BAQsFAAOCAQEARp6v8LiiX6KZSM+oJ0shzbK5pnJw
-# Yy/jVSl7OUZO535lBliLvFeKkg0I2BC6NiT6Cnv7O9Niv0qUFeaC24pUbf8o/mfP
-# cT/mMwnZolkQ9B5K/mXM3tRr41IpdQBKK6XMy5voqU33tBdZkkHDtz+G5vbAf0Q8
-# RlwXWuOkO9VpJtUhfeGAZ35irLdOLhWa5Zwjr1sR6nGpQfkNeTipoQ3PtLHaPpp6
-# xyLFdM3fRwmGxPyRJbIblumFCOjd6nRgbmClVnoNyERY3Ob5SBSe5b/eAL13sZgU
-# chQk38cRLB8AP8NLFMZnHMweBqOQX1xUiz7jM1uCD8W3hgJOcZ/pZkU/djGCAlow
-# ggJWAgEBMIGLMHcxCzAJBgNVBAYTAlVTMR0wGwYDVQQKExRTeW1hbnRlYyBDb3Jw
-# b3JhdGlvbjEfMB0GA1UECxMWU3ltYW50ZWMgVHJ1c3QgTmV0d29yazEoMCYGA1UE
-# AxMfU3ltYW50ZWMgU0hBMjU2IFRpbWVTdGFtcGluZyBDQQIQe9Tlr7rMBz+hASME
-# IkFNEjALBglghkgBZQMEAgGggaQwGgYJKoZIhvcNAQkDMQ0GCyqGSIb3DQEJEAEE
-# MBwGCSqGSIb3DQEJBTEPFw0yNDAxMjMyMDEwMTNaMC8GCSqGSIb3DQEJBDEiBCAl
-# FZww/OYEhg2SWVqiAqsdmqKPftzpqGbY60whShG9FzA3BgsqhkiG9w0BCRACLzEo
-# MCYwJDAiBCDEdM52AH0COU4NpeTefBTGgPniggE8/vZT7123H99h+DALBgkqhkiG
-# 9w0BAQEEggEAIkrBji36BN2JOgQpJuoP4Pynb6MM3X7mHAYfpLDRIxt1JnQc9SzZ
-# dz5AJ0pgqbl6lRjFahAqm90RdqWpasuxYIYWzMgZrx0k8aaGvupNJDM/5XAMyaC/
-# kgsyuIRGHnxNJXROMQzv7aRJxtwzKEOyZQuVW7HfZa7YrBlGM7v15KDwQjWjjcQy
-# s2BB3Ha003ZM4psXaTHSqAq2JQLWTLiSnIU3+MXb8kVDYNMJWdWin1xY4w1ksRhk
-# vtZlMw4k2+0sGgKe1CuFY4DvxhD2evJW3YhFMdPVC+QQWXWmZYBrex7CYI//p55b
-# elOe8jCng0krtH+SJPQgaJ9O+QyIEIWgRg==
+# BgNVBAMTFkN5YmVyQXJrIFNvZnR3YXJlIEx0ZC4xITAfBgkqhkiG9w0BCQEWEmFk
+# bWluQGN5YmVyYXJrLmNvbTCCAiIwDQYJKoZIhvcNAQEBBQADggIPADCCAgoCggIB
+# ANZQPlxrcfMjyi+hhEn41HogbUr17cJB+2rbTOBphAPzZEySpd+GObt2pAyYbXTb
+# 1XGHRomYxq/fTVcDWn6ESHKqIpTUnTsai2FakMr4OINfey2c0Lw81SCwedG6ind+
+# QxszJ3c1iAoyuO8fbNAJJQHKTNAdTCADAHrfHvv8fuF8iw8vZCP5E6JFdcvaNUL9
+# 9lecTTlIuXMyfLoO/9Q6geZ30UeSibynHoZbGzzK20pxL9VM5LA9YiGtA+bfdRGe
+# hlqhPD4KgBRkc9bogTxA78QaiBUEnYM1vMmKc86MjXSS6R+z5mFAdhcs5C6cqWdO
+# wo5jVFXpwxQh0jNTalt/kkwTjlIeO3+fdDDYLmbmH3nIsMutaHyXPogVp7upktz9
+# WeS9r0ZpqKw7viVe/CWS9Df8/ceZD9zBkIbTrYGFU02hDaWaN1pFs6V21iaiTaZX
+# pnnpEbtgoy8rptlFFIf0GQBDD0mTBDm7lZ8rDfN7IECcahCN4dMfnFO/QFpxAILa
+# ekomXUmtkH3WBaQl4hraHja+fCi4ZtKhYYTZWdakH6bvdkENywuze/liwv2OVdZ4
+# qddJpbvblqa9jqnV8RhugofYVEBq6yyd6OgJosdFPIZN7upzrCmHJTiTDtBNQJ2z
+# m7LXrryUF9yTyjeUjLbUfTKbpj4UzM3jcKu1J5jDL5zFAgMBAAGjggHVMIIB0TAO
+# BgNVHQ8BAf8EBAMCB4AwgZ8GCCsGAQUFBwEBBIGSMIGPMEwGCCsGAQUFBzAChkBo
+# dHRwOi8vc2VjdXJlLmdsb2JhbHNpZ24uY29tL2NhY2VydC9nc2djY3I0NWV2Y29k
+# ZXNpZ25jYTIwMjAuY3J0MD8GCCsGAQUFBzABhjNodHRwOi8vb2NzcC5nbG9iYWxz
+# aWduLmNvbS9nc2djY3I0NWV2Y29kZXNpZ25jYTIwMjAwVQYDVR0gBE4wTDBBBgkr
+# BgEEAaAyAQIwNDAyBggrBgEFBQcCARYmaHR0cHM6Ly93d3cuZ2xvYmFsc2lnbi5j
+# b20vcmVwb3NpdG9yeS8wBwYFZ4EMAQMwCQYDVR0TBAIwADBHBgNVHR8EQDA+MDyg
+# OqA4hjZodHRwOi8vY3JsLmdsb2JhbHNpZ24uY29tL2dzZ2NjcjQ1ZXZjb2Rlc2ln
+# bmNhMjAyMC5jcmwwHQYDVR0RBBYwFIESYWRtaW5AY3liZXJhcmsuY29tMBMGA1Ud
+# JQQMMAoGCCsGAQUFBwMDMB8GA1UdIwQYMBaAFCWd0PxZCYZjxezzsRM7VxwDkjYR
+# MB0GA1UdDgQWBBQewhxJyrlxdN3533DHK3x6hrz7uzANBgkqhkiG9w0BAQsFAAOC
+# AgEAWgNDad105JaVijYhNrwnSPmm1mIhDpSvPDvIR4pENU9IdPcI8rxXRmJ083JM
+# vIx5p7LvuBOTkyaNgZOjmkypMNM4NtMtHHdXAiWb6T+Udv4w0lcgUBWapeRxO7X5
+# ok+E9lrVeSiiSrM/6TDF3xkAwcR5CzYjEYsgYa0H+hBXl9+oXe2QYFuArlQ0OfTv
+# nXr2iFlvl0AKR7fRY0qBBGoKUATjGiYUFcigc9PyW2vml1BMxXx65jkKdoPIMZSJ
+# Ka7xkExONB+t3uJc8yI+n2x24k1bjl8mJdnEkryUATe58vLxfYa93mLFC7VLCTND
+# cJjFBvdL86F1HyveXhHX5XMlS/HPcnRk6VV8+zkr72fGP18cxl1nOAftgjOxh0mD
+# Y6l9UMkOle1gSlf/S15z6VlRx+TkE/ZeL2n/tw4zHqWaNatHy+Zs2BIzaMdzP/u4
+# tYTOuhQfXYnP5zrGw5ldYkIAQawVZwcODVO+FBb8/F3uTBbiMqCaOxy8RGLTqJlI
+# bk+fBnkgtYyiIglUE10Y/FwI4qMgG2iZh97WsISLblu4Lfz9t7/bo54Y4bGqOdnW
+# rz6e4hDhlkozop7MHG35nqHRN5Qx4iUDxvyDJLpZXG0kes+Cx+zkqhGvz9ST0bB6
+# WH5RcnIk2Rog6Rr/bs0O1ZMS5DZy6vm1RB5fAZfAZ451uRwxghnmMIIZ4gIBATBs
+# MFwxCzAJBgNVBAYTAkJFMRkwFwYDVQQKExBHbG9iYWxTaWduIG52LXNhMTIwMAYD
+# VQQDEylHbG9iYWxTaWduIEdDQyBSNDUgRVYgQ29kZVNpZ25pbmcgQ0EgMjAyMAIM
+# Bmw4iuAOfBdrKw0JMA0GCWCGSAFlAwQCAQUAoHwwEAYKKwYBBAGCNwIBDDECMAAw
+# GQYJKoZIhvcNAQkDMQwGCisGAQQBgjcCAQQwHAYKKwYBBAGCNwIBCzEOMAwGCisG
+# AQQBgjcCARUwLwYJKoZIhvcNAQkEMSIEIBQmms98Hof10t+2tV9oqBptmJpr/sgV
+# F2PRlWw7fZqjMA0GCSqGSIb3DQEBAQUABIICAF4tE5BfALbvmmeGlc8/EzNp0Xt3
+# FAgHV4NT/xuYd2QTY6F7MSViBeBg19VguQIXeQCejCvuoVuqEvZucIfBea2H56e1
+# vqgi+Cv5du3vbGGFPGL8N+ruqipfnLW/4HjNYrjX00YqMcFSKwOoeWiblG2j9iFg
+# PzUQqFjSPvIbnyWNTp5dDuej9qgvEoU5RcgbnEiUsx3EhgtaybPQeSoT6dMDuigs
+# i9adW/vZneg/VYkeGJPOqjbG65Nl4NcTOFEM+Bb2Pj0jYJB2uh2GTboPZjPBjV+7
+# a8sYLr3AQLIP340B24Kdbedqhe2AkqVTFFPlI0w0YMAEiFlWVhHDi+VnDGK1Ey12
+# tOLSfr763UtXaj8Jpsrl5heNoz6GOkULlmPPHMMM8Mq+et/twYlB7/E0zfdEXESa
+# IhwnSnOfRzp9EL724qIZ1enR54GRF64/7ETK9Ebl5xoQLCJXudbb6+1WZ1AVA1hD
+# d9Fxn4FiqtrkcGBlXw1m/HMIXQB7/XemyPOvw0RjIG92c/22tF4gyiLQkq6yYtk5
+# 6ZRYkQ1MesQH8c6P7Lp8KV8dwVwUZoC0B3RSkD3IR0rJFPVGmDD/gf9cLaUWJoJ8
+# XdlcRngoRNNQcWDtyIe+XneSiR+rBi1vqfbyyVROtavWlBYZBwTfRHPQhPgmljbq
+# oIdJpVNdylfHevLmoYIWzTCCFskGCisGAQQBgjcDAwExgha5MIIWtQYJKoZIhvcN
+# AQcCoIIWpjCCFqICAQMxDTALBglghkgBZQMEAgEwgegGCyqGSIb3DQEJEAEEoIHY
+# BIHVMIHSAgEBBgsrBgEEAaAyAgMBAjAxMA0GCWCGSAFlAwQCAQUABCBt+UdXPBSH
+# QvJM7JWaOiTOVVzqqbWRUp/0qXSVjEmcCQIUUo/aup8idK17EDP7IVJWTSS8BU0Y
+# DzIwMjUwMjE2MTU1ODU2WjADAgEBoGGkXzBdMQswCQYDVQQGEwJCRTEZMBcGA1UE
+# CgwQR2xvYmFsU2lnbiBudi1zYTEzMDEGA1UEAwwqR2xvYmFsc2lnbiBUU0EgZm9y
+# IENvZGVTaWduMSAtIFI2IC0gMjAyMzExoIISVDCCBmwwggRUoAMCAQICEAGb6t7I
+# TWuP92w6ny4BJBYwDQYJKoZIhvcNAQELBQAwWzELMAkGA1UEBhMCQkUxGTAXBgNV
+# BAoTEEdsb2JhbFNpZ24gbnYtc2ExMTAvBgNVBAMTKEdsb2JhbFNpZ24gVGltZXN0
+# YW1waW5nIENBIC0gU0hBMzg0IC0gRzQwHhcNMjMxMTA3MTcxMzQwWhcNMzQxMjA5
+# MTcxMzQwWjBdMQswCQYDVQQGEwJCRTEZMBcGA1UECgwQR2xvYmFsU2lnbiBudi1z
+# YTEzMDEGA1UEAwwqR2xvYmFsc2lnbiBUU0EgZm9yIENvZGVTaWduMSAtIFI2IC0g
+# MjAyMzExMIIBojANBgkqhkiG9w0BAQEFAAOCAY8AMIIBigKCAYEA6oQ3UGg8lYW1
+# SFRxl/OEcsmdgNMI3Fm7v8tNkGlHieUs2PGoan5gN0lzm7iYsxTg74yTcCC19SvX
+# ZgV1P3qEUKlSD+DW52/UHDUu4C8pJKOOdyUn4LjzfWR1DJpC5cad4tiHc4vvoI2X
+# fhagxLJGz2DGzw+BUIDdT+nkRqI0pz4Yx2u0tvu+2qlWfn+cXTY9YzQhS8jSoxMa
+# Pi9RaHX5f/xwhBFlMxKzRmUohKAzwJKd7bgfiWPQHnssW7AE9L1yY86wMSEBAmpy
+# siIs7+sqOxDV8Zr0JqIs/FMBBHkjaVHTXb5zhMubg4htINIgzoGraiJLeZBC5oJC
+# rwPr1NDag3rDLUjxzUWRtxFB3RfvQPwSorLAWapUl05tw3rdhobUOzdHOOgDPDG/
+# TDN7Q+zw0P9lpp+YPdLGulkibBBYEcUEzOiimLAdM9DzlR347XG0C0HVZHmivGAu
+# w3rJ3nA3EhY+Ao9dOBGwBIlni6UtINu41vWc9Q+8iL8nLMP5IKLBAgMBAAGjggGo
+# MIIBpDAOBgNVHQ8BAf8EBAMCB4AwFgYDVR0lAQH/BAwwCgYIKwYBBQUHAwgwHQYD
+# VR0OBBYEFPlOq764+Fv/wscD9EHunPjWdH0/MFYGA1UdIARPME0wCAYGZ4EMAQQC
+# MEEGCSsGAQQBoDIBHjA0MDIGCCsGAQUFBwIBFiZodHRwczovL3d3dy5nbG9iYWxz
+# aWduLmNvbS9yZXBvc2l0b3J5LzAMBgNVHRMBAf8EAjAAMIGQBggrBgEFBQcBAQSB
+# gzCBgDA5BggrBgEFBQcwAYYtaHR0cDovL29jc3AuZ2xvYmFsc2lnbi5jb20vY2Ev
+# Z3N0c2FjYXNoYTM4NGc0MEMGCCsGAQUFBzAChjdodHRwOi8vc2VjdXJlLmdsb2Jh
+# bHNpZ24uY29tL2NhY2VydC9nc3RzYWNhc2hhMzg0ZzQuY3J0MB8GA1UdIwQYMBaA
+# FOoWxmnn48tXRTkzpPBAvtDDvWWWMEEGA1UdHwQ6MDgwNqA0oDKGMGh0dHA6Ly9j
+# cmwuZ2xvYmFsc2lnbi5jb20vY2EvZ3N0c2FjYXNoYTM4NGc0LmNybDANBgkqhkiG
+# 9w0BAQsFAAOCAgEAlfRnz5OaQ5KDF3bWIFW8if/kX7LlFRq3lxFALgBBvsU/JKAb
+# RwczBEy0tGL/xu7TDMI0oJRcN5jrRPhf+CcKAr4e0SQdI8svHKsnerOpxS8M5OWQ
+# 8BUkHqMVGfjvg+hPu2ieI299PQ1xcGEyfEZu8o/RnOhDTfqD4f/E4D7+3lffBmvz
+# agaBaKsMfCr3j0L/wHNp2xynFk8mGVhz7ZRe5BqiEIIHMjvKnr/dOXXUvItUP35Q
+# lTSfkjkkUxiDUNRbL2a0e/5bKesexQX9oz37obDzK3kPsUusw6PZo9wsnCsjlvZ6
+# KrutxVe2hLZjs2CYEezG1mZvIoMcilgD9I/snE7Q3+7OYSHTtZVUSTshUT2hI4WS
+# wlvyepSEmAqPJFYiigT6tJqJSDX4b+uBhhFTwJN7OrTUNMxi1jVhjqZQ+4h0Htcx
+# NSEeEb+ro2RTjlTic2ak+2Zj4TfJxGv7KzOLEcN0kIGDyE+Gyt1Kl9t+kFAloWHs
+# hps2UgfLPmJV7DOm5bga+t0kLgz5MokxajWV/vbR/xeKriMJKyGuYu737jfnsMmz
+# Fe12mrf95/7haN5EwQp04ZXIV/sU6x5a35Z1xWUZ9/TVjSGvY7br9OIXRp+31wdu
+# ap0r/unScU7Svk9i00nWYF9A43aZIETYSlyzXRrZ4qq/TVkAF55gZzpHEqAwggZZ
+# MIIEQaADAgECAg0B7BySQN79LkBdfEd0MA0GCSqGSIb3DQEBDAUAMEwxIDAeBgNV
+# BAsTF0dsb2JhbFNpZ24gUm9vdCBDQSAtIFI2MRMwEQYDVQQKEwpHbG9iYWxTaWdu
+# MRMwEQYDVQQDEwpHbG9iYWxTaWduMB4XDTE4MDYyMDAwMDAwMFoXDTM0MTIxMDAw
+# MDAwMFowWzELMAkGA1UEBhMCQkUxGTAXBgNVBAoTEEdsb2JhbFNpZ24gbnYtc2Ex
+# MTAvBgNVBAMTKEdsb2JhbFNpZ24gVGltZXN0YW1waW5nIENBIC0gU0hBMzg0IC0g
+# RzQwggIiMA0GCSqGSIb3DQEBAQUAA4ICDwAwggIKAoICAQDwAuIwI/rgG+GadLOv
+# dYNfqUdSx2E6Y3w5I3ltdPwx5HQSGZb6zidiW64HiifuV6PENe2zNMeswwzrgGZt
+# 0ShKwSy7uXDycq6M95laXXauv0SofEEkjo+6xU//NkGrpy39eE5DiP6TGRfZ7jHP
+# vIo7bmrEiPDul/bc8xigS5kcDoenJuGIyaDlmeKe9JxMP11b7Lbv0mXPRQtUPbFU
+# UweLmW64VJmKqDGSO/J6ffwOWN+BauGwbB5lgirUIceU/kKWO/ELsX9/RpgOhz16
+# ZevRVqkuvftYPbWF+lOZTVt07XJLog2CNxkM0KvqWsHvD9WZuT/0TzXxnA/TNxNS
+# 2SU07Zbv+GfqCL6PSXr/kLHU9ykV1/kNXdaHQx50xHAotIB7vSqbu4ThDqxvDbm1
+# 9m1W/oodCT4kDmcmx/yyDaCUsLKUzHvmZ/6mWLLU2EESwVX9bpHFu7FMCEue1EIG
+# bxsY1TbqZK7O/fUF5uJm0A4FIayxEQYjGeT7BTRE6giunUlnEYuC5a1ahqdm/TMD
+# Ad6ZJflxbumcXQJMYDzPAo8B/XLukvGnEt5CEk3sqSbldwKsDlcMCdFhniaI/Miy
+# Tdtk8EWfusE/VKPYdgKVbGqNyiJc9gwE4yn6S7Ac0zd0hNkdZqs0c48efXxeltY9
+# GbCX6oxQkW2vV4Z+EDcdaxoU3wIDAQABo4IBKTCCASUwDgYDVR0PAQH/BAQDAgGG
+# MBIGA1UdEwEB/wQIMAYBAf8CAQAwHQYDVR0OBBYEFOoWxmnn48tXRTkzpPBAvtDD
+# vWWWMB8GA1UdIwQYMBaAFK5sBaOTE+Ki5+LXHNbH8H/IZ1OgMD4GCCsGAQUFBwEB
+# BDIwMDAuBggrBgEFBQcwAYYiaHR0cDovL29jc3AyLmdsb2JhbHNpZ24uY29tL3Jv
+# b3RyNjA2BgNVHR8ELzAtMCugKaAnhiVodHRwOi8vY3JsLmdsb2JhbHNpZ24uY29t
+# L3Jvb3QtcjYuY3JsMEcGA1UdIARAMD4wPAYEVR0gADA0MDIGCCsGAQUFBwIBFiZo
+# dHRwczovL3d3dy5nbG9iYWxzaWduLmNvbS9yZXBvc2l0b3J5LzANBgkqhkiG9w0B
+# AQwFAAOCAgEAf+KI2VdnK0JfgacJC7rEuygYVtZMv9sbB3DG+wsJrQA6YDMfOcYW
+# axlASSUIHuSb99akDY8elvKGohfeQb9P4byrze7AI4zGhf5LFST5GETsH8KkrNCy
+# z+zCVmUdvX/23oLIt59h07VGSJiXAmd6FpVK22LG0LMCzDRIRVXd7OlKn14U7XIQ
+# cXZw0g+W8+o3V5SRGK/cjZk4GVjCqaF+om4VJuq0+X8q5+dIZGkv0pqhcvb3JEt0
+# Wn1yhjWzAlcfi5z8u6xM3vreU0yD/RKxtklVT3WdrG9KyC5qucqIwxIwTrIIc59e
+# odaZzul9S5YszBZrGM3kWTeGCSziRdayzW6CdaXajR63Wy+ILj198fKRMAWcznt8
+# oMWsr1EG8BHHHTDFUVZg6HyVPSLj1QokUyeXgPpIiScseeI85Zse46qEgok+wEr1
+# If5iEO0dMPz2zOpIJ3yLdUJ/a8vzpWuVHwRYNAqJ7YJQ5NF7qMnmvkiqK1XZjbcl
+# IA4bUaDUY6qD6mxyYUrJ+kPExlfFnbY8sIuwuRwx773vFNgUQGwgHcIt6AvGjW2M
+# tnHtUiH+PvafnzkarqzSL3ogsfSsqh3iLRSd+pZqHcY8yvPZHL9TTaRHWXyVxENB
+# +SXiLBB+gfkNlKd98rUJ9dhgckBQlSDUQ0S++qCV5yBZtnjGpGqqIpswggWDMIID
+# a6ADAgECAg5F5rsDgzPDhWVI5v9FUTANBgkqhkiG9w0BAQwFADBMMSAwHgYDVQQL
+# ExdHbG9iYWxTaWduIFJvb3QgQ0EgLSBSNjETMBEGA1UEChMKR2xvYmFsU2lnbjET
+# MBEGA1UEAxMKR2xvYmFsU2lnbjAeFw0xNDEyMTAwMDAwMDBaFw0zNDEyMTAwMDAw
+# MDBaMEwxIDAeBgNVBAsTF0dsb2JhbFNpZ24gUm9vdCBDQSAtIFI2MRMwEQYDVQQK
+# EwpHbG9iYWxTaWduMRMwEQYDVQQDEwpHbG9iYWxTaWduMIICIjANBgkqhkiG9w0B
+# AQEFAAOCAg8AMIICCgKCAgEAlQfoc8pm+ewUyns89w0I8bRFCyyCtEjG61s8roO4
+# QZIzFKRvf+kqzMawiGvFtonRxrL/FM5RFCHsSt0bWsbWh+5NOhUG7WRmC5KAykTe
+# c5RO86eJf094YwjIElBtQmYvTbl5KE1SGooagLcZgQ5+xIq8ZEwhHENo1z08isWy
+# ZtWQmrcxBsW+4m0yBqYe+bnrqqO4v76CY1DQ8BiJ3+QPefXqoh8q0nAue+e8k7tt
+# U+JIfIwQBzj/ZrJ3YX7g6ow8qrSk9vOVShIHbf2MsonP0KBhd8hYdLDUIzr3XTrK
+# otudCd5dRC2Q8YHNV5L6frxQBGM032uTGL5rNrI55KwkNrfw77YcE1eTtt6y+OKF
+# t3OiuDWqRfLgnTahb1SK8XJWbi6IxVFCRBWU7qPFOJabTk5aC0fzBjZJdzC8cTfl
+# puwhCHX85mEWP3fV2ZGXhAps1AJNdMAU7f05+4PyXhShBLAL6f7uj+FuC7IIs2Fm
+# CWqxBjplllnA8DX9ydoojRoRh3CBCqiadR2eOoYFAJ7bgNYl+dwFnidZTHY5W+r5
+# paHYgw/R/98wEfmFzzNI9cptZBQselhP00sIScWVZBpjDnk99bOMylitnEJFeW4O
+# hxlcVLFltr+Mm9wT6Q1vuC7cZ27JixG1hBSKABlwg3mRl5HUGie/Nx4yB9gUYzwo
+# TK8CAwEAAaNjMGEwDgYDVR0PAQH/BAQDAgEGMA8GA1UdEwEB/wQFMAMBAf8wHQYD
+# VR0OBBYEFK5sBaOTE+Ki5+LXHNbH8H/IZ1OgMB8GA1UdIwQYMBaAFK5sBaOTE+Ki
+# 5+LXHNbH8H/IZ1OgMA0GCSqGSIb3DQEBDAUAA4ICAQCDJe3o0f2VUs2ewASgkWnm
+# XNCE3tytok/oR3jWZZipW6g8h3wCitFutxZz5l/AVJjVdL7BzeIRka0jGD3d4XJE
+# lrSVXsB7jpl4FkMTVlezorM7tXfcQHKso+ubNT6xCCGh58RDN3kyvrXnnCxMvEMp
+# mY4w06wh4OMd+tgHM3ZUACIquU0gLnBo2uVT/INc053y/0QMRGby0uO9RgAabQK6
+# JV2NoTFR3VRGHE3bmZbvGhwEXKYV73jgef5d2z6qTFX9mhWpb+Gm+99wMOnD7kJG
+# 7cKTBYn6fWN7P9BxgXwA6JiuDng0wyX7rwqfIGvdOxOPEoziQRpIenOgd2nHtlx/
+# gsge/lgbKCuobK1ebcAF0nu364D+JTf+AptorEJdw+71zNzwUHXSNmmc5nsE324G
+# abbeCglIWYfrexRgemSqaUPvkcdM7BjdbO9TLYyZ4V7ycj7PVMi9Z+ykD0xF/9O5
+# MCMHTI8Qv4aW2ZlatJlXHKTMuxWJU7osBQ/kxJ4ZsRg01Uyduu33H68klQR4qAO7
+# 7oHl2l98i0qhkHQlp7M+S8gsVr3HyO844lyS8Hn3nIS6dC1hASB+ftHyTwdZX4st
+# Q1LrRgyU4fVmR3l31VRbH60kN8tFWk6gREjI2LCZxRWECfbWSUnAZbjmGnFuoKjx
+# guhFPmzWAtcKZ4MFWsmkEDGCA0kwggNFAgEBMG8wWzELMAkGA1UEBhMCQkUxGTAX
+# BgNVBAoTEEdsb2JhbFNpZ24gbnYtc2ExMTAvBgNVBAMTKEdsb2JhbFNpZ24gVGlt
+# ZXN0YW1waW5nIENBIC0gU0hBMzg0IC0gRzQCEAGb6t7ITWuP92w6ny4BJBYwCwYJ
+# YIZIAWUDBAIBoIIBLTAaBgkqhkiG9w0BCQMxDQYLKoZIhvcNAQkQAQQwKwYJKoZI
+# hvcNAQk0MR4wHDALBglghkgBZQMEAgGhDQYJKoZIhvcNAQELBQAwLwYJKoZIhvcN
+# AQkEMSIEILMWZq4x9mGCm64/eKNADcUvi+OI3IW44wop98miUjU5MIGwBgsqhkiG
+# 9w0BCRACLzGBoDCBnTCBmjCBlwQgOoh6lRteuSpe4U9su3aCN6VF0BBb8EURveJf
+# gqkW0egwczBfpF0wWzELMAkGA1UEBhMCQkUxGTAXBgNVBAoTEEdsb2JhbFNpZ24g
+# bnYtc2ExMTAvBgNVBAMTKEdsb2JhbFNpZ24gVGltZXN0YW1waW5nIENBIC0gU0hB
+# Mzg0IC0gRzQCEAGb6t7ITWuP92w6ny4BJBYwDQYJKoZIhvcNAQELBQAEggGAxKg9
+# fPRR7QrWpkC7hj2u4EgC5u2MUkbCecOWv0EUIuuC1KVFbIsewaDDU45opCvwOiIf
+# ReTdTdE0J7lBPzdMMpQ9pny1iyPrOmC8Modeg6SQqZhd6g5M7VhkBRiJV1HHjJrA
+# 3yYhA5surEeWvNg/l5zcKN3CwhDui/yhVMEsoqhl7ojcHNJDSSIzwx8BZHqdJq7y
+# 6C9aVCI7DPB8NYVrsfKll/524P3qr830aisUdmoqo/hw0Lg36jZ5Us5xU5YcseVF
+# SyAVupISijgpvttDYsI9ofVcEwc8Bn5FrdGRO4ztQHqutow4qTcnvyFzC8dTmMbn
+# 4F+gOdFD8mETTvtf4QGJQcF2DkROgT05KrIJ9AETsiFBih1g9QUMBwdSyfr3Tldy
+# RnuzK+kWON5vcZ/K8hB6y0gX9Ek1TexEeAHsW2nR/MdbHWNhO/NScdA9iwpqQG15
+# WcHS7z0Lw9rb49imUrhmD6qjKu3aC/w/FX1qxLQ8BJXB/net7dHJ/qmMuavC
 # SIG # End signature block
