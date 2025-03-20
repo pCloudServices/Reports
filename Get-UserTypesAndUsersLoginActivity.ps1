@@ -31,7 +31,7 @@ param(
     [switch]$ExportToCSV,
     [Parameter(Mandatory=$false, HelpMessage="Specify the UserTypes you want to get a report on.")]
     [ValidateSet("EPVUser", "EPVUserLite", "BasicUser", "ExtUser", "BizUser", "AIMAccount", "AppProvider", "CCP", "CCPEndpoints", "CPM", "PSM")]
-    [string[]]$GetSpecificuserTypes,
+    [string[]]$GetSpecificuserTypes = @("EPVUser", "EPVUserLite", "BasicUser", "ExtUser", "BizUser", "AIMAccount", "AppProvider", "CCP", "CCPEndpoints", "CPM", "PSM"),
     [Parameter(Mandatory = $false, HelpMessage = "Specify the type of report to generate. Valid values are 'CapacityReport' and 'DetailedReport'.")]
     [ValidateSet("DetailedReport", "CapacityReport")]
     [string]$ReportType,
